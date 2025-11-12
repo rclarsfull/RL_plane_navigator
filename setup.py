@@ -24,6 +24,12 @@ install_requires = [
     "pyyaml>=5.1",
     "pytablewriter~=1.2",
     "shimmy~=2.0",
+    "pygame",
+    "numba",
+    "bluesky_gym",
+    "sbx-rl",
+    "tensorboard",
+    "optuna-dashboard",
 ]
 plots_requires = ["seaborn", "rliable~=1.2.0", "scipy~=1.10"]
 test_requires = [

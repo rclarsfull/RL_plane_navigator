@@ -4,7 +4,12 @@ import gymnasium as gym
 from gymnasium.envs.registration import register, register_envs
 
 from rl_zoo3.wrappers import MaskVelocityWrapper
-
+from custom_envs.crossing_planes import Cross_env
+register(
+    id="crossing_planes",
+    entry_point="custom_envs.crossing_planes:Cross_env",
+)
+    
 try:
     import pybullet_envs_gymnasium
 except ImportError:

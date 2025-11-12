@@ -12,3 +12,10 @@ plotly
 # panda-gym~=3.0.1
 wandb
 moviepy>=1.0.0
+
+pygame
+numba 
+bluesky_gym
+sbx-rl
+tensorboard
+optuna-dashboard
