@@ -1,3 +1,17 @@
+crossing_planes:
+  policy: "MlpPolicy"
+  n_timesteps: !!float 2e6
+  n_envs: 12                                     
+  gamma: 0.96
+  normalize: "dict(norm_obs=True, norm_reward=True)"
+  env_wrapper:
+    - stable_baselines3.common.monitor.Monitor
+  callback:
+    - "custom_envs.info_logger_callback.LogAllInfoCallback"
+  # Note: Frame stacking removed - environment already has temporal features
+  # (action_history, multi_heading_cpa) that provide temporal context
+
+
 atari:
   env_wrapper:
     - stable_baselines3.common.atari_wrappers.AtariWrapper
