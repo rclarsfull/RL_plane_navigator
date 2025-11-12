@@ -19,6 +19,8 @@ AGENT_INTERACTION_TIME = 15
 TIME_LIMIT = 60 * 60
 
 D_HEADING = 180
+D_SPEED = 10  # m/s speed change per action (±10 m/s)
+SPEED_STABILITY_REWARD = 0.05  # Reward für nicht-ändern der Geschwindigkeit
 FLIGHT_LEVEL = 245
 MAX_SPEED = 240
 MIN_SPEED = 200
@@ -39,6 +41,7 @@ MAX_AGENT_TRAILS = 1000  # Max Positionen in agent_trails
 # Heading offsets für Multi-Heading CPA Analyse
 HEADING_OFFSETS = np.array([-40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0], dtype=np.float64)
 NUM_HEADING_OFFSETS = len(HEADING_OFFSETS)
+MULTI_CAP_HEADING_RENDER = True
 
 logger = logging.getLogger("Cross_env")
 

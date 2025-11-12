@@ -24,6 +24,7 @@ class Agent:
     # Action tracking
     last_action: float = 0.0
     last_action_continuous: float = 0.0
+    last_action_speed: int = 1  # 0=Beschleunigen, 1=Nichts, 2=Verlangsamen (Default: Nichts)
     is_noop: bool = False
     counter_no_op: int = 0
     action_markers_with_steering: List[Tuple] = field(default_factory=list)
@@ -355,6 +356,7 @@ class Agents:
             agent.drift = 0
             agent.last_action = 0.0
             agent.last_action_continuous = 0.0
+            agent.last_action_speed = 1  # Reset to "Nichts"
             agent.is_noop = False
             agent.intrusions_caused_by_last_action = 0
             agent.counter_no_op = 0

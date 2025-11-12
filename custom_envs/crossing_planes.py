@@ -70,20 +70,21 @@ class Cross_env(gym.Env):
         self.cumulative_cpa_warning_reward = 0.0
         self.cumulative_waypoint_bonus = 0.0
         self.cumulative_proximity_reward = 0.0
+        self.cumulative_speed_stability_reward = 0.0
 
 
         # Observation Space Breakdown:
         # ego_state: 6 (heading_cos, heading_sin, speed, drift, v_sep, dist_to_wp)
         # threat_features: NUM_AC_STATE * 8 = 4 * 8 = 32
-        # action_history: 4 (last_action, action_continuous, action_age, turning_rate)
+        # action_history: 5 (last_action_heading, action_continuous, action_age, turning_rate, last_action_speed)
         # multi_heading_cpa: NUM_HEADING_OFFSETS (min time_to_cpa for each heading offset) = 9
-        # Total: 6 + 32 + 4 + 9 = 51
-        obs_dim = 6 + NUM_AC_STATE * 8 + 4 + NUM_HEADING_OFFSETS
+        # Total: 6 + 32 + 5 + 9 = 52
+        obs_dim = 6 + NUM_AC_STATE * 8 + 5 + NUM_HEADING_OFFSETS
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
-        self.action_space = gym.spaces.MultiDiscrete([2, 180])
+        self.action_space = gym.spaces.MultiDiscrete([2, 180, 3])
 
         self.sim = Simulator()
         self.sim.init(simulator_step_size=1.0)
@@ -422,6 +423,7 @@ class Cross_env(gym.Env):
         self.cumulative_cpa_warning_reward = 0.0
         self.cumulative_waypoint_bonus = 0.0
         self.cumulative_proximity_reward = 0.0
+        self.cumulative_speed_stability_reward = 0.0
         
         logger.debug(f"Generating aircraft for episode #{self.num_episodes}...")
         self._gen_aircraft()
@@ -878,22 +880,27 @@ class Cross_env(gym.Env):
 
     def _compute_action_history_refactored(self, agent: Agent) -> np.ndarray:
         """
-        REFACTORED Action History (4 features):
+        REFACTORED Action History (5 features):
         - last_action_do: [0, 1] - War letzte Aktion ein Lenken?
         - last_action_continuous: [-1, 1] - Lenkintensität
         - action_age_normalized: [0, 1] - Alter der Aktion (max 120 Steps = 10 Minuten)
         - turning_rate_normalized: [-1, 1] - Aktuelle Rotationsrate
+        - last_action_speed: [0, 1, 2] - Normalisiert zu [-1, 0, 1] (0=Beschleunigen, 1=Nichts, 2=Verlangsamen)
         """
         last_action_do = float(agent.last_action)
         last_action_continuous = float(agent.last_action_continuous)
         action_age_normalized = np.clip(float(agent.action_age) / 120.0, 0.0, 1.0)
         turning_rate_normalized = np.clip(agent.turning_rate, -1.0, 1.0)
         
+        # Speed action normalisiert: 0→-1 (Beschleunigen), 1→0 (Nichts), 2→+1 (Verlangsamen)
+        speed_action_normalized = float(agent.last_action_speed) - 1.0
+        
         return np.array([
             last_action_do, 
             last_action_continuous, 
             action_age_normalized,
-            turning_rate_normalized
+            turning_rate_normalized,
+            speed_action_normalized
         ], dtype=np.float32)
 
     def _get_observation_dict(self, agent: Optional[Agent] = None) -> Dict[str, np.ndarray]:
@@ -903,7 +910,7 @@ class Cross_env(gym.Env):
         Returns dict mit 5 Komponenten:
         - ego_state: (6) Heading, Speed, Drift, V-Sep, Distance to Waypoint
         - threat_features: (NUM_AC_STATE*8) Intruder Features (aktueller Heading)
-        - action_history: (4) Last Action, Age, Turn Rate
+        - action_history: (5) Last Action, Age, Turn Rate, Speed Action
         - multi_heading_cpa: (NUM_HEADING_OFFSETS) Min time_to_cpa für jeden Heading-Offset
         """
         if agent is None:
@@ -987,23 +994,26 @@ class Cross_env(gym.Env):
             'cumulative_cpa_warning_reward': float(self.cumulative_cpa_warning_reward),
             'cumulative_waypoint_bonus': float(self.cumulative_waypoint_bonus),
             'cumulative_proximity_reward': float(self.cumulative_proximity_reward),
+            'cumulative_speed_stability_reward': float(self.cumulative_speed_stability_reward),
             'avg_action_age': float(avg_action_age),
             'avg_action_age_seconds': float(avg_action_age_seconds),
             'total_cumulative_reward': float(self.cumulative_drift_reward + self.cumulative_intrusion_reward + 
                                               self.cumulative_action_age_reward + self.cumulative_cpa_warning_reward +
                                               self.cumulative_waypoint_bonus +
-                                              self.cumulative_proximity_reward),
+                                              self.cumulative_proximity_reward +
+                                              self.cumulative_speed_stability_reward),
 
             'last_reward_drift': float(last_reward_components.get('drift', 0.0)),
             'last_reward_action_age': float(last_reward_components.get('action_age', 0.0)),
             'last_reward_cpa_warning': float(last_reward_components.get('cpa_warning', 0.0)),
             'last_reward_proximity': float(last_reward_components.get('proximity', 0.0)),
+            'last_reward_speed_stability': float(last_reward_components.get('speed_stability', 0.0)),
             'last_reward_total': float(last_reward_components.get('total', 0.0))
         }
 
     def _get_reward(self):
         """
-        DENSE REWARD STRUCTURE - 3 KOMPONENTEN!
+        DENSE REWARD STRUCTURE - 5 KOMPONENTEN!
         
         Alle Komponenten geben Feedback basierend auf Agent-Verhalten:
         
@@ -1012,17 +1022,20 @@ class Cross_env(gym.Env):
         2. action_age_reward: [0, 0.1] (abhängig von NOOP-Dauer) ← JEDEN STEP (wenn NOOP)!
         3. collision_avoidance_reward: [0, 0.5] (abhängig von Abstand zu CPA) ← NUR bei Gefahr!
         4. proximity_reward: [0, ?] (abhängig von Nähe zum Waypoint + Anzahl gesammelter Waypoints) ← JEDEN STEP!
+        5. speed_stability_reward: [0, SPEED_STABILITY_REWARD] (Belohnung für Geschwindigkeit NICHT ändern) ← JEDEN STEP!
         
         STRUKTUR:
         - Wenn kein Konflikt: Agent wird für gutes Heading + lange NOOP belohnt
         - Wenn Konflikt erkannt: Agent wird zusätzlich belohnt wenn er von CPA wegfliegt
         - Proximity: Je näher am nächsten Waypoint + je mehr Waypoints bereits gesammelt = höherer Reward!
+        - Speed Stability: Agent lernt, Geschwindigkeit nur bei Bedarf zu ändern
         
         VORTEILE:
         - Klare, non-redundante Reward-Komponenten
         - Agent lernt schneller: NOOP verwenden ist OK, gutes Heading zu Ziel, Konflikte vermeiden, Waypoints sammeln
         - Keine widersprüchlichen Signale (monoton steigende Waypoint-Rewards)
         - Proximität wird mit Waypoint-Fortschritt belohnt → Agent wird immer besser
+        - Speed-Änderungen werden sparsam eingesetzt (nur wenn nötig)
         """
         agent = self.all_agents.get_active_agent()
         
@@ -1101,6 +1114,17 @@ class Cross_env(gym.Env):
                         f"dist_to_wp={distance_to_waypoint:.2f}NM | proximity_norm={proximity_to_waypoint:.3f} | "
                         f"waypoints_collected={agent.waypoints_collected} | factor={waypoint_factor:.1f} | "
                         f"reward={proximity_reward:+.3f}")
+        
+        # === SPEED STABILITY REWARD ===
+        # Belohnung dafür, die Geschwindigkeit NICHT zu ändern (last_action_speed == 1 = "Nichts")
+        speed_stability_reward = 0.0
+        if agent.last_action_speed == 1:
+            speed_stability_reward = SPEED_STABILITY_REWARD
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Step {self.steps}] SPEED STABILITY REWARD: "
+                        f"last_action_speed={agent.last_action_speed} | "
+                        f"reward={speed_stability_reward:+.3f}")
             
         waypoint_bonus = agent.waypoint_reached_this_step * WAYPOINT_BONUS
 
@@ -1108,6 +1132,7 @@ class Cross_env(gym.Env):
                  action_age_reward +
                  collision_avoidance_reward +
                  proximity_reward +
+                 speed_stability_reward +
                  waypoint_bonus)
         
         if logger.isEnabledFor(logging.DEBUG):
@@ -1116,6 +1141,7 @@ class Cross_env(gym.Env):
                         f"ActionAge={action_age_reward:+.3f} | "
                         f"CPA-Avoidance={collision_avoidance_reward:+.3f} | "
                         f"Proximity={proximity_reward:+.3f} | "
+                        f"SpeedStability={speed_stability_reward:+.3f} | "
                         f"TOTAL={reward:+.3f}")
         
 
@@ -1124,6 +1150,7 @@ class Cross_env(gym.Env):
             'action_age': float(action_age_reward),
             'cpa_warning': float(collision_avoidance_reward),
             'proximity': float(proximity_reward),
+            'speed_stability': float(speed_stability_reward),
             'total': float(reward)
         }
         
@@ -1131,22 +1158,27 @@ class Cross_env(gym.Env):
         self.cumulative_action_age_reward += action_age_reward
         self.cumulative_cpa_warning_reward += collision_avoidance_reward
         self.cumulative_proximity_reward += proximity_reward
+        self.cumulative_speed_stability_reward += speed_stability_reward
         self.total_reward += reward
         return reward
 
 
     def _set_action(self, action, agent: Agent) -> None:
         """
-        Verarbeitet MultiDiscrete Action: [do_action, steering_direction]
-        do_action: 0=No-Op, 1=Steering; steering: 0-179 → [-1, 1] (180 Optionen = 2° pro Schritt)
+        Verarbeitet MultiDiscrete Action: [do_action, steering_direction, speed_action]
+        do_action: 0=No-Op, 1=Steering
+        steering: 0-179 → [-1, 1] (180 Optionen = 2° pro Schritt)
+        speed_action: 0=Beschleunigen (+D_SPEED), 1=Nichts, 2=Verlangsamen (-D_SPEED)
         """
         do_action = int(action[0])
         steering_index = int(action[1])
+        speed_action = int(action[2])
 
         continuous_steering = (steering_index / 89.5) - 1.0
         continuous_steering = np.clip(continuous_steering, -1.0, 1.0)
         
         agent.last_action_continuous = continuous_steering
+        agent.last_action_speed = speed_action
         self.last_continuous_action = continuous_steering
         
         is_active_agent = (agent == self.all_agents.get_active_agent())
@@ -1158,6 +1190,7 @@ class Cross_env(gym.Env):
         else:
             x_pos, y_pos = None, None
         
+        # Handle Heading Action
         if do_action == 0:
             agent.is_noop = True
             agent.last_action = 0
@@ -1197,6 +1230,20 @@ class Cross_env(gym.Env):
         else:
             agent.is_noop = True
             agent.last_action = 0
+        
+        # Handle Speed Action (parallel zu Heading) - NUR wenn NICHT NOOP!
+        # Bei NOOP (do_action == 0) wird NICHTS gemacht (weder Heading noch Speed)
+        if do_action == 1:  # Nur bei aktiver Aktion (Steering)
+            _, _, _, current_speed = self.sim.traf_get_state(agent.id)
+            if speed_action == 0:
+                # Beschleunigen
+                new_speed = min(current_speed + D_SPEED, MAX_SPEED)
+                self.sim.traf_set_speed(agent.id, new_speed)
+            elif speed_action == 2:
+                # Verlangsamen
+                new_speed = max(current_speed - D_SPEED, MIN_SPEED)
+                self.sim.traf_set_speed(agent.id, new_speed)
+            # speed_action == 1: Nichts tun (Speed bleibt unverändert)
 
     def _render_frame(self):
         canvas = pygame.Surface(self.window_size)
@@ -1213,7 +1260,6 @@ class Cross_env(gym.Env):
             
             if agent.id not in self.agent_trails:
                 self.agent_trails[agent.id] = []
-            
 
             if x_pos is not None and y_pos is not None:
                 self.agent_trails[agent.id].append((int(x_pos), int(y_pos)))
@@ -1256,14 +1302,12 @@ class Cross_env(gym.Env):
                 waypoint_list = list(agent.waypoint_queue)
                 route_points = []
                 
-
                 if x_pos is not None and y_pos is not None:
                     try:
                         route_points.append((x_pos, y_pos))
                     except (ValueError, TypeError):
                         pass
                 
-
                 for waypoint in waypoint_list:
                     target_x, target_y = self.camera.latlon_to_screen(self.sim, waypoint.lat, waypoint.lon, self.window_width, self.window_height)
                     if target_x is not None and target_y is not None:
@@ -1287,7 +1331,6 @@ class Cross_env(gym.Env):
                     except Exception:
                         pass
             
-
             if agent == self.all_agents.get_active_agent():
                 for waypoint_idx, waypoint in enumerate(agent.waypoint_queue):
                     target_x, target_y = self.camera.latlon_to_screen(self.sim, waypoint.lat, waypoint.lon, self.window_width, self.window_height)
@@ -1310,7 +1353,6 @@ class Cross_env(gym.Env):
 
 
         active_agent = self.all_agents.get_active_agent()
-        
 
         if active_agent:
             active_agent.update_observation_cache(self)
@@ -1339,16 +1381,11 @@ class Cross_env(gym.Env):
                 marker_size = 12
                 ring_width = 3
                 
-
                 if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
                     collision_info = active_agent.intruder_collision_cache[intruder_id]
                     time_to_min_sep = collision_info.get('time_to_min_sep', 0)
                     closing_rate = collision_info.get('closing_rate', 0)
                     min_separation = collision_info.get('min_separation', 100)
-                    
-
-
-
 
                     is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
                     if is_real_threat:
@@ -1356,10 +1393,8 @@ class Cross_env(gym.Env):
                         marker_size = 14
                         ring_width = 3
                 
-
                 pygame.draw.circle(canvas, obs_color, (int(int_x), int(int_y)), marker_size, ring_width)
                 
-
                 slot_text = f"[{slot_idx}]"
                 text_surface = font_obs.render(slot_text, True, obs_color)
                 text_x = int_x + marker_size + 3
@@ -1395,16 +1430,13 @@ class Cross_env(gym.Env):
                     time_surface = cpa_font.render(time_text, True, obs_color)
                     canvas.blit(time_surface, (int(int_x) + marker_size + 3, int(int_y) + 15))
                     
-
                     cr_text = f"cr:{closing_rate:+.2f}m/s"
                     cr_surface = cpa_font.render(cr_text, True, obs_color)
                     canvas.blit(cr_surface, (int(int_x) + marker_size + 3, int(int_y) + 30))
-                    
 
                     min_sep_text = f"sep:{min_separation:.2f}NM"
                     min_sep_surface = cpa_font.render(min_sep_text, True, obs_color)
                     canvas.blit(min_sep_surface, (int(int_x) + marker_size + 3, int(int_y) + 45))
-                    
 
                     if time_to_min_sep > 0 and time_to_min_sep < LONG_CONFLICT_THRESHOLD_SEC:
 
@@ -1448,7 +1480,7 @@ class Cross_env(gym.Env):
             pygame.draw.line(canvas, (0,0,0), (x_pos,y_pos), (heading_x,heading_y), 2)
             
             # ===== MULTI-HEADING CPA VISUALISIERUNG (nur für aktiven Agenten) =====
-            if agent == self.all_agents.get_active_agent():
+            if agent == self.all_agents.get_active_agent() and MULTI_CAP_HEADING_RENDER:
                 obs_dict = agent.obs_dict_cache if agent.obs_dict_cache is not None else self._get_observation_dict(agent)
                 multi_heading_cpa = obs_dict.get('multi_heading_cpa', None)
                 
@@ -1513,7 +1545,6 @@ class Cross_env(gym.Env):
                     
                     # Blitte transparente Surface auf Canvas
                     canvas.blit(fan_surface, (0, 0))
-
  
             dist_km = INTRUSION_DISTANCE * NM2KM / 2  
             radius_px = (dist_km / self.camera.zoom_km) * self.window_width

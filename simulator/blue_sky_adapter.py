@@ -103,7 +103,10 @@ class Simulator(simulator_interface.SimulatorInterface):
 
     @time_function
     def traf_set_speed(self, id: str, new_speed: float):
-        bs.stack.stack(f"TAS {id} {new_speed}")
+        # Umrechnung von m/s in CAS-Knoten
+        # 1 m/s = 1.94384 Knoten
+        cas_kts = new_speed * 1.94384
+        bs.stack.stack(f"SPD {id},{cas_kts}")
 
     @time_function
     def traf_set_altitude(self, id: str, new_altitude: float):
