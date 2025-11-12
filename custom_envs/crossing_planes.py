@@ -1446,7 +1446,75 @@ class Cross_env(gym.Env):
             lat_end, lon_end = fn.get_point_at_distance(lat, lon, line_length_km, hdg)
             heading_x, heading_y = self.camera.latlon_to_screen(self.sim, lat_end, lon_end, self.window_width, self.window_height)
             pygame.draw.line(canvas, (0,0,0), (x_pos,y_pos), (heading_x,heading_y), 2)
+            
+            # ===== MULTI-HEADING CPA VISUALISIERUNG (nur für aktiven Agenten) =====
+            if agent == self.all_agents.get_active_agent():
+                obs_dict = agent.obs_dict_cache if agent.obs_dict_cache is not None else self._get_observation_dict(agent)
+                multi_heading_cpa = obs_dict.get('multi_heading_cpa', None)
+                
+                if multi_heading_cpa is not None and len(multi_heading_cpa) == NUM_HEADING_OFFSETS:
+                    # Fächer-Visualisierung: Jeder Heading-Offset wird als Segment gezeichnet
+                    fan_radius_nm = 30.0  # Radius des Fächers in NM
+                    fan_radius_km = fan_radius_nm * NM2KM
+                    fan_radius_px = (fan_radius_km / self.camera.zoom_km) * self.window_width
+                    
+                    segment_half_angle = 5.0  # Jedes Segment ist ±5° breit
+                    
+                    # Erstelle transparente Surface für Fächer-Segmente
+                    fan_surface = pygame.Surface((self.window_width, self.window_height), pygame.SRCALPHA)
+                    
+                    for offset_idx in range(NUM_HEADING_OFFSETS):
+                        offset_deg = HEADING_OFFSETS[offset_idx]
+                        cpa_value = multi_heading_cpa[offset_idx]  # [0, 1]: 1=sicher, 0=gefährlich
+                        
+                        # Farb-Interpolation: Rot (Gefahr) → Gelb (Warnung) → Grün (Sicher)
+                        if cpa_value >= 0.8:
+                            # Grün (sicher)
+                            r = int(255 * (1.0 - cpa_value) / 0.2)
+                            g = 255
+                            b = 0
+                        elif cpa_value >= 0.5:
+                            # Gelb-Orange (Warnung)
+                            r = 255
+                            g = int(255 * (cpa_value - 0.5) / 0.3)
+                            b = 0
+                        else:
+                            # Rot (Gefahr)
+                            r = 255
+                            g = 0
+                            b = 0
+                        
+                        # Transparenz: Alpha-Kanal (120 = ca. 47% Deckkraft)
+                        segment_color = (r, g, b, 120)
+                        
+                        # Berechne die beiden Randlinien des Segments
+                        heading_with_offset = hdg + offset_deg
+                        angle_left = heading_with_offset - segment_half_angle
+                        angle_right = heading_with_offset + segment_half_angle
+                        
+                        # Endpunkte für die Segment-Linien
+                        lat_left, lon_left = fn.get_point_at_distance(lat, lon, fan_radius_km, angle_left)
+                        lat_right, lon_right = fn.get_point_at_distance(lat, lon, fan_radius_km, angle_right)
+                        
+                        x_left, y_left = self.camera.latlon_to_screen(self.sim, lat_left, lon_left, self.window_width, self.window_height)
+                        x_right, y_right = self.camera.latlon_to_screen(self.sim, lat_right, lon_right, self.window_width, self.window_height)
+                        
+                        if x_left is not None and y_left is not None and x_right is not None and y_right is not None:
+                            # Zeichne gefülltes Dreieck (Fächer-Segment) auf transparente Surface
+                            pygame.draw.polygon(fan_surface, segment_color, 
+                                              [(int(x_pos), int(y_pos)), 
+                                               (int(x_left), int(y_left)), 
+                                               (int(x_right), int(y_right))], 0)
+                            
+                            # Zeichne Rand des Segments (dünn, schwarz mit Transparenz)
+                            pygame.draw.line(fan_surface, (0, 0, 0, 80), (int(x_pos), int(y_pos)), (int(x_left), int(y_left)), 1)
+                            pygame.draw.line(fan_surface, (0, 0, 0, 80), (int(x_pos), int(y_pos)), (int(x_right), int(y_right)), 1)
+                            pygame.draw.line(fan_surface, (0, 0, 0, 80), (int(x_left), int(y_left)), (int(x_right), int(y_right)), 1)
+                    
+                    # Blitte transparente Surface auf Canvas
+                    canvas.blit(fan_surface, (0, 0))
 
+ 
             dist_km = INTRUSION_DISTANCE * NM2KM / 2  
             radius_px = (dist_km / self.camera.zoom_km) * self.window_width
             if radius_px > 1:
