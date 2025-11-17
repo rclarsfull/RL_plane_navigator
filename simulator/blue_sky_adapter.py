@@ -67,7 +67,8 @@ class Simulator(simulator_interface.SimulatorInterface):
     @time_function
     def traf_create(self, acid: str, actype: str, acspd: float,
                     aclat: float, aclon: float, achdg: float, acalt: int):
-        bs.stack.stack(f"CRE {acid} {actype} {aclat} {aclon} {achdg} FL{acalt} {acspd}")
+        cas_kts = acspd * 1.94384
+        bs.stack.stack(f"CRE {acid} {actype} {aclat} {aclon} {achdg} FL{acalt} {cas_kts}")
         bs.stack.stack(f'RESOOFF {acid}')
 
     @time_function
