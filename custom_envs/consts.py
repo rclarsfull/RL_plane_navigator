@@ -22,8 +22,8 @@ D_HEADING = 180
 D_SPEED = 10  # m/s speed change per action (±10 m/s)
 SPEED_STABILITY_REWARD = 0.05  # Reward für nicht-ändern der Geschwindigkeit
 FLIGHT_LEVEL = 245
-MAX_SPEED = 240
-MIN_SPEED = 200
+MAX_SPEED = 254
+MIN_SPEED = 250
 
 
 DANGER_CLOSING_THRESHOLD = 0.0  # m/s: closing_rate < 0 = closing
