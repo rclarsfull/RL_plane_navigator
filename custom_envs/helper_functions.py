@@ -109,3 +109,49 @@ def compute_cpa_multi_heading_numba(
     
     return min_separations, t_to_cpas, closing_rates
 
+
+# ==================== COMMON ENVIRONMENT METHODS ====================
+
+def bound_angle_positive_negative_180(angle: float) -> float:
+    """Bound angle to [-180, 180] range"""
+    while angle > 180:
+        angle -= 360
+    while angle < -180:
+        angle += 360
+    return angle
+
+
+def get_point_at_distance(lat: float, lon: float, distance_nm: float, bearing_deg: float) -> Tuple[float, float]:
+    """
+    Calculate point at given distance and bearing from origin point.
+    
+    Args:
+        lat: Origin latitude (degrees)
+        lon: Origin longitude (degrees)
+        distance_nm: Distance in nautical miles
+        bearing_deg: Bearing in degrees (0=North, 90=East)
+    
+    Returns:
+        (new_lat, new_lon) in degrees
+    """
+    # Earth radius in NM
+    R = 3440.065  # nautical miles
+    
+    # Convert to radians
+    lat_rad = np.deg2rad(lat)
+    lon_rad = np.deg2rad(lon)
+    bearing_rad = np.deg2rad(bearing_deg)
+    
+    # Calculate new position
+    new_lat_rad = np.arcsin(
+        np.sin(lat_rad) * np.cos(distance_nm / R) +
+        np.cos(lat_rad) * np.sin(distance_nm / R) * np.cos(bearing_rad)
+    )
+    
+    new_lon_rad = lon_rad + np.arctan2(
+        np.sin(bearing_rad) * np.sin(distance_nm / R) * np.cos(lat_rad),
+        np.cos(distance_nm / R) - np.sin(lat_rad) * np.sin(new_lat_rad)
+    )
+    
+    return np.rad2deg(new_lat_rad), np.rad2deg(new_lon_rad)
+

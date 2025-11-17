@@ -36,6 +36,7 @@ class Agent:
     prev_drift: float = 0.0
     action_age: int = 0
     turning_rate: float = 0.0
+    target_heading: Optional[float] = None  # Absolutes Ziel-Heading des Agents
     
     # Waypoint tracking
     waypoint_reached_this_step: bool = False
