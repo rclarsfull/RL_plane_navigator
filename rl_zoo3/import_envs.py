@@ -5,10 +5,25 @@ from gymnasium.envs.registration import register, register_envs
 
 from rl_zoo3.wrappers import MaskVelocityWrapper
 from custom_envs.crossing_planes import Cross_env
+from custom_envs.crossing_planes_conti import Cross_env as Cross_env_conti
+from custom_envs.crossing_planes_abs import Cross_env as Cross_env_abs
+from custom_envs.crossing_planes_hierarchical import CrossingPlanesHierarchical
 register(
-    id="crossing_planes",
-    entry_point="custom_envs.crossing_planes:Cross_env",
-)
+            id="crossing_planes",
+            entry_point="custom_envs.crossing_planes:Cross_env",
+        )
+register(
+            id="crossing_planes_conti",
+            entry_point="custom_envs.crossing_planes_conti:Cross_env",
+        )
+register(
+            id="crossing_planes_abs",
+            entry_point="custom_envs.crossing_planes_abs:Cross_env",
+        )
+register(
+            id="crossing_planes_hierarchical",
+            entry_point="custom_envs.crossing_planes_hierarchical:CrossingPlanesHierarchical",
+        )
     
 try:
     import pybullet_envs_gymnasium
