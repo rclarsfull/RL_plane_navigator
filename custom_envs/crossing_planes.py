@@ -42,7 +42,6 @@ class Cross_env(gym.Env):
             assert render_mode in self.metadata["render_modes"], f"Invalid render_mode {render_mode}"
         
         self.render_mode = render_mode
-
         self.step_limit = int(TIME_LIMIT / AGENT_INTERACTION_TIME)
 
         self.window_width = 1500
@@ -113,8 +112,7 @@ class Cross_env(gym.Env):
         is_closing = closing_rate < DANGER_CLOSING_THRESHOLD
         is_near_future = (time_to_min_sep > 0) & (time_to_min_sep < LONG_CONFLICT_THRESHOLD_SEC)
         is_dangerous = min_separation < DANGER_MIN_SEP_THRESHOLD
-        
-        # Für skalare Werte: verwende 'and', für Arrays: verwende '&' (bereits oben gemacht)
+
         return is_closing & is_near_future & is_dangerous
 
     def _calculate_collision_criticality_vectorized(self, agent_lat, agent_lon, agent_hdg, agent_tas,
@@ -135,10 +133,6 @@ class Cross_env(gym.Env):
                 agent_lat, agent_lon, intruder_lats[i], intruder_lons[i]
             )
         
-        # ⚡ NUMBA-OPTIMIERTE VEKTORMATH (10-20x schneller als Pure Python!)
-        # ACHTUNG: Keine float() conversions - das kostet Zeit!
-        # Use the highly-optimized multi-heading implementation with a single offset (0°)
-        # and derive the single-heading results from the returned 2D arrays.
         min_seps_2d, t_to_cpas_2d, c_rates_2d = compute_cpa_multi_heading_numba(
             agent_hdg, agent_tas,
             intruder_hdgs, intruder_tas_array,
@@ -169,25 +163,11 @@ class Cross_env(gym.Env):
                 'future_collision': bool(future_collision[i])
             }
         
-        del bearings, distances, min_separation, t_to_cpa, closing_rate, is_colliding, flugbahnen_schneiden, future_collision  # Free memory
+        del bearings, distances, min_separation, t_to_cpa, closing_rate, is_colliding, flugbahnen_schneiden, future_collision  
         return results
 
     def _calculate_cpa_multi_heading_vectorized(self, agent_lat, agent_lon, agent_hdg, agent_tas,
                                                intruder_lats, intruder_lons, intruder_hdgs, intruder_tas_array):
-        """
-        WRAPPER: Berechnet CPA-Punkte für MULTIPLE Heading-Offsets (-40° bis +40°).
-        
-        Returns ein strukturiertes Dict für den Observation Space:
-        {
-            intruder_idx: {
-                'heading_offset_0': {'min_sep': ..., 'time_to_cpa': ..., 'closing_rate': ...},
-                'heading_offset_1': {...},
-                ...
-                'heading_offset_8': {...}
-            },
-            ...
-        }
-        """
         n_intruders = len(intruder_lats)
         
         if n_intruders == 0:
@@ -201,8 +181,7 @@ class Cross_env(gym.Env):
             bearings[i], distances[i] = self.sim.geo_calculate_direction_and_distance(
                 agent_lat, agent_lon, intruder_lats[i], intruder_lons[i]
             )
-        
-        # ⚡ NUMBA-OPTIMIERTE MULTI-HEADING CPA-BERECHNUNG
+
         min_seps, t_cpas, c_rates = compute_cpa_multi_heading_numba(
             agent_hdg, agent_tas,
             intruder_hdgs, intruder_tas_array,
@@ -284,9 +263,7 @@ class Cross_env(gym.Env):
         
         # ⚡ VEKTORISIERTE NORMALISIERUNG: Alle Offsets auf einmal
         valid_mask = min_critical_times < np.inf
-        multi_heading_cpa_features[valid_mask] = np.clip(
-            min_critical_times[valid_mask] / LONG_CONFLICT_THRESHOLD_SEC, 0.0, 1.0
-        )
+        multi_heading_cpa_features[valid_mask] = min_critical_times[valid_mask] / LONG_CONFLICT_THRESHOLD_SEC
         
         # Debug-Logging (nur wenn aktiviert)
         if logger.isEnabledFor(logging.DEBUG):
@@ -372,7 +349,6 @@ class Cross_env(gym.Env):
         else:
             closing_rate = 0.0
         
-        closing_rate = np.clip(closing_rate, -50.0, 50.0)
         if is_debug:
             logger.debug(f"[CAP-CALC] closing_rate={closing_rate:.6f}NM/s (negative=approaching, positive=separating)")
         
@@ -383,8 +359,8 @@ class Cross_env(gym.Env):
             logger.debug(f"[CAP-CALC RESULT] min_sep={min_separation:.4f}NM, time_to_sep={t_to_cpa:.4f}s, cr={closing_rate:.6f}, future_collision={future_collision}\n")
         
         return {
-            'min_separation': float(np.clip(min_separation, 0.0, 100.0)),
-            'time_to_min_sep': float(np.clip(t_to_cpa, -900.0, 900.0)),
+            'min_separation': float(min_separation),
+            'time_to_min_sep': float(t_to_cpa),
             'closing_rate': float(closing_rate),
             'is_colliding': bool(is_colliding),
             'flugbahnen_schneiden': bool(flugbahnen_schneiden),
@@ -424,6 +400,7 @@ class Cross_env(gym.Env):
         self.cumulative_waypoint_bonus = 0.0
         self.cumulative_proximity_reward = 0.0
         self.cumulative_speed_stability_reward = 0.0
+        self.cumulative_noop_reward = 0.0
         
         logger.debug(f"Generating aircraft for episode #{self.num_episodes}...")
         self._gen_aircraft()
@@ -444,8 +421,6 @@ class Cross_env(gym.Env):
         if self.all_agents.is_active_agent_finished():
             raise Exception("Active agent has already finished, this should not happen")
 
-
-        
         aktiv_agent = self.all_agents.get_active_agent()
         self._set_action(action, aktiv_agent)
 
@@ -786,8 +761,6 @@ class Cross_env(gym.Env):
             collision_info = agent.intruder_collision_cache[intruder_id]
             distance_nm = agent.intruder_distance_map[intruder_id]
             
-            distance_normalized = np.clip(distance_nm / OBS_DISTANCE, 0.0, 1.0)
-            
             bearing, _ = self.sim.geo_calculate_direction_and_distance(ac_lat, ac_lon, int_lat, int_lon)
             bearing_diff = fn.bound_angle_positive_negative_180(bearing - ac_hdg)
             bearing_diff_rad = np.deg2rad(bearing_diff)
@@ -795,14 +768,11 @@ class Cross_env(gym.Env):
             bearing_sin = np.sin(bearing_diff_rad)
             
             closing_rate = collision_info['closing_rate']
-            closing_rate_normalized = np.clip(closing_rate / 10.0, -1.0, 1.0)
             
             min_separation = collision_info['min_separation']
-            min_sep_normalized = np.clip(min_separation / 20.0, 0.0, 1.0)
             
 
             time_to_min_sep = collision_info['time_to_min_sep']
-            time_to_min_sep_normalized = np.clip(time_to_min_sep / LONG_CONFLICT_THRESHOLD_SEC, 0.0, 1.0)
             
 
             cpa_rel_x_normalized = 0.0
@@ -842,10 +812,6 @@ class Cross_env(gym.Env):
 
                     cpa_rel_x = distance_to_cpa * np.cos(bearing_to_cpa_rad)
                     cpa_rel_y = distance_to_cpa * np.sin(bearing_to_cpa_rad)
-                    
-
-                    cpa_rel_x_normalized = np.clip(cpa_rel_x / OBS_DISTANCE, -1.0, 1.0)
-                    cpa_rel_y_normalized = np.clip(cpa_rel_y / OBS_DISTANCE, -1.0, 1.0)
                 except Exception as e:
                     logger.debug(f"Error computing CPA position for {intruder_id}: {e}")
             
@@ -855,13 +821,13 @@ class Cross_env(gym.Env):
             agent.cpa_position_map[intruder_id] = (cpa_lat_cached, cpa_lon_cached)
             
             features_list = [
-                distance_normalized,
+                distance_nm,  
                 bearing_cos, bearing_sin,
-                closing_rate_normalized,
-                min_sep_normalized,
-                time_to_min_sep_normalized,
-                cpa_rel_x_normalized,
-                cpa_rel_y_normalized
+                closing_rate,
+                min_separation,
+                time_to_min_sep,
+                cpa_rel_x,
+                cpa_rel_y
             ]
             
             base_idx = idx * 8
@@ -889,8 +855,8 @@ class Cross_env(gym.Env):
         """
         last_action_do = float(agent.last_action)
         last_action_continuous = float(agent.last_action_continuous)
-        action_age_normalized = np.clip(float(agent.action_age) / 120.0, 0.0, 1.0)
-        turning_rate_normalized = np.clip(agent.turning_rate, -1.0, 1.0)
+        action_age_normalized = float(agent.action_age)
+        turning_rate_normalized = float(agent.turning_rate)
         
         # Speed action normalisiert: 0→-1 (Beschleunigen), 1→0 (Nichts), 2→+1 (Verlangsamen)
         speed_action_normalized = float(agent.last_action_speed) - 1.0
@@ -995,25 +961,28 @@ class Cross_env(gym.Env):
             'cumulative_waypoint_bonus': float(self.cumulative_waypoint_bonus),
             'cumulative_proximity_reward': float(self.cumulative_proximity_reward),
             'cumulative_speed_stability_reward': float(self.cumulative_speed_stability_reward),
+            'cumulative_noop_reward': float(self.cumulative_noop_reward),
             'avg_action_age': float(avg_action_age),
             'avg_action_age_seconds': float(avg_action_age_seconds),
             'total_cumulative_reward': float(self.cumulative_drift_reward + self.cumulative_intrusion_reward + 
                                               self.cumulative_action_age_reward + self.cumulative_cpa_warning_reward +
                                               self.cumulative_waypoint_bonus +
                                               self.cumulative_proximity_reward +
-                                              self.cumulative_speed_stability_reward),
+                                              self.cumulative_speed_stability_reward +
+                                              self.cumulative_noop_reward),
 
             'last_reward_drift': float(last_reward_components.get('drift', 0.0)),
             'last_reward_action_age': float(last_reward_components.get('action_age', 0.0)),
             'last_reward_cpa_warning': float(last_reward_components.get('cpa_warning', 0.0)),
             'last_reward_proximity': float(last_reward_components.get('proximity', 0.0)),
             'last_reward_speed_stability': float(last_reward_components.get('speed_stability', 0.0)),
+            'last_reward_noop': float(last_reward_components.get('noop', 0.0)),
             'last_reward_total': float(last_reward_components.get('total', 0.0))
         }
 
     def _get_reward(self):
         """
-        DENSE REWARD STRUCTURE - 5 KOMPONENTEN!
+        DENSE REWARD STRUCTURE - 6 KOMPONENTEN!
         
         Alle Komponenten geben Feedback basierend auf Agent-Verhalten:
         
@@ -1023,19 +992,8 @@ class Cross_env(gym.Env):
         3. collision_avoidance_reward: [0, 0.5] (abhängig von Abstand zu CPA) ← NUR bei Gefahr!
         4. proximity_reward: [0, ?] (abhängig von Nähe zum Waypoint + Anzahl gesammelter Waypoints) ← JEDEN STEP!
         5. speed_stability_reward: [0, SPEED_STABILITY_REWARD] (Belohnung für Geschwindigkeit NICHT ändern) ← JEDEN STEP!
+        6. noop_reward: [NOOP_REWARD] (flache Belohnung für jede NOOP-Aktion) ← JEDEN STEP (wenn NOOP)!
         
-        STRUKTUR:
-        - Wenn kein Konflikt: Agent wird für gutes Heading + lange NOOP belohnt
-        - Wenn Konflikt erkannt: Agent wird zusätzlich belohnt wenn er von CPA wegfliegt
-        - Proximity: Je näher am nächsten Waypoint + je mehr Waypoints bereits gesammelt = höherer Reward!
-        - Speed Stability: Agent lernt, Geschwindigkeit nur bei Bedarf zu ändern
-        
-        VORTEILE:
-        - Klare, non-redundante Reward-Komponenten
-        - Agent lernt schneller: NOOP verwenden ist OK, gutes Heading zu Ziel, Konflikte vermeiden, Waypoints sammeln
-        - Keine widersprüchlichen Signale (monoton steigende Waypoint-Rewards)
-        - Proximität wird mit Waypoint-Fortschritt belohnt → Agent wird immer besser
-        - Speed-Änderungen werden sparsam eingesetzt (nur wenn nötig)
         """
         agent = self.all_agents.get_active_agent()
         
@@ -1125,6 +1083,17 @@ class Cross_env(gym.Env):
             logger.debug(f"[Step {self.steps}] SPEED STABILITY REWARD: "
                         f"last_action_speed={agent.last_action_speed} | "
                         f"reward={speed_stability_reward:+.3f}")
+        
+        # === NOOP REWARD ===
+        # Flache Belohnung für jede NOOP-Aktion (ermutigt Agent, weniger zu steuern)
+        noop_reward = 0.0
+        if agent.is_noop:
+            noop_reward = NOOP_REWARD
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Step {self.steps}] NOOP REWARD: "
+                        f"is_noop={agent.is_noop} | "
+                        f"reward={noop_reward:+.3f}")
             
         waypoint_bonus = agent.waypoint_reached_this_step * WAYPOINT_BONUS
 
@@ -1133,6 +1102,7 @@ class Cross_env(gym.Env):
                  collision_avoidance_reward +
                  proximity_reward +
                  speed_stability_reward +
+                 noop_reward +
                  waypoint_bonus)
         
         if logger.isEnabledFor(logging.DEBUG):
@@ -1142,6 +1112,7 @@ class Cross_env(gym.Env):
                         f"CPA-Avoidance={collision_avoidance_reward:+.3f} | "
                         f"Proximity={proximity_reward:+.3f} | "
                         f"SpeedStability={speed_stability_reward:+.3f} | "
+                        f"NOOP={noop_reward:+.3f} | "
                         f"TOTAL={reward:+.3f}")
         
 
@@ -1151,6 +1122,7 @@ class Cross_env(gym.Env):
             'cpa_warning': float(collision_avoidance_reward),
             'proximity': float(proximity_reward),
             'speed_stability': float(speed_stability_reward),
+            'noop': float(noop_reward),
             'total': float(reward)
         }
         
@@ -1159,6 +1131,7 @@ class Cross_env(gym.Env):
         self.cumulative_cpa_warning_reward += collision_avoidance_reward
         self.cumulative_proximity_reward += proximity_reward
         self.cumulative_speed_stability_reward += speed_stability_reward
+        self.cumulative_noop_reward += noop_reward
         self.total_reward += reward
         return reward
 
