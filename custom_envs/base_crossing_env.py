@@ -30,8 +30,7 @@ from simulator.blue_sky_adapter import Simulator
 
 logger = logging.getLogger(__name__)
 
-HEADING_OFFSETS = np.array([-20.0, -10.0, 0.0, 10.0, 20.0], dtype=np.float64)
-NUM_HEADING_OFFSETS = len(HEADING_OFFSETS)
+
 
 
 class BaseCrossingEnv:
@@ -175,6 +174,31 @@ class BaseCrossingEnv:
     
     # ==================== INTRUDER SELECTION & FEATURES ====================
     
+    def _compute_action_history(self, agent: Agent) -> np.ndarray:
+        """
+        Compute action history features (5 features):
+        - last_action_do: [0, 1] - War letzte Aktion ein Lenken?
+        - last_action_continuous: [-1, 1] - Lenkintensität
+        - action_age_normalized: [0, 1] - Alter der Aktion
+        - turning_rate_normalized: [-1, 1] - Aktuelle Rotationsrate
+        - last_action_speed: [-1, 0, 1] - Normalisiert (0=Beschleunigen, 1=Nichts, 2=Verlangsamen)
+        """
+        last_action_do = float(agent.last_action)
+        last_action_continuous = float(agent.last_action_continuous)
+        action_age_normalized = float(agent.action_age)
+        turning_rate_normalized = float(agent.turning_rate)
+        
+        # Speed action normalisiert: 0→-1 (Beschleunigen), 1→0 (Nichts), 2→+1 (Verlangsamen)
+        speed_action_normalized = float(agent.last_action_speed) - 1.0
+        
+        return np.array([
+            last_action_do, 
+            last_action_continuous, 
+            action_age_normalized,
+            turning_rate_normalized,
+            speed_action_normalized
+        ], dtype=np.float32)
+    
     def _select_intruders_by_cpa(
         self, agent: Agent, ac_lat: float, ac_lon: float, ac_hdg: float, ac_tas: float, collision_info_cache: Dict
     ) -> List[str]:
@@ -198,7 +222,7 @@ class BaseCrossingEnv:
         self, agent: Agent, ac_lat: float, ac_lon: float, ac_hdg: float, ac_tas: float
     ) -> np.ndarray:
         """Compute intruder features for observation"""
-        FILLER_SLOT = [1.0, -1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0]
+        FILLER_SLOT = [1.0, -1.0, 0.0, 0.0, 1.0, 1.0, ac_tas, 0.0, 0.0]
         intruder_features = np.array(FILLER_SLOT * NUM_AC_STATE, dtype=np.float32)
         
         closest_ids = agent.selected_intruder_ids
@@ -213,7 +237,6 @@ class BaseCrossingEnv:
             collision_info = agent.intruder_collision_cache[intruder_id]
             distance_nm = agent.intruder_distance_map[intruder_id]
             
-            distance_normalized = np.clip(distance_nm / OBS_DISTANCE, 0.0, 1.0)
             
             bearing, _ = self.sim.geo_calculate_direction_and_distance(ac_lat, ac_lon, int_lat, int_lon)
             bearing_diff = bound_angle_positive_negative_180(bearing - ac_hdg)
@@ -222,16 +245,11 @@ class BaseCrossingEnv:
             bearing_sin = np.sin(bearing_diff_rad)
             
             closing_rate = collision_info['closing_rate']
-            closing_rate_normalized = np.clip(closing_rate / 10.0, -1.0, 1.0)
             
             min_separation = collision_info['min_separation']
-            min_sep_normalized = np.clip(min_separation / 20.0, 0.0, 1.0)
             
             time_to_min_sep = collision_info['time_to_min_sep']
-            time_to_min_sep_normalized = np.clip(time_to_min_sep / LONG_CONFLICT_THRESHOLD_SEC, 0.0, 1.0)
             
-            cpa_rel_x_normalized = 0.0
-            cpa_rel_y_normalized = 0.0
             cpa_lat_cached = None
             cpa_lon_cached = None
             
@@ -259,11 +277,7 @@ class BaseCrossingEnv:
                     bearing_to_cpa_rel = bound_angle_positive_negative_180(bearing_to_cpa - ac_hdg)
                     bearing_to_cpa_rad = np.deg2rad(bearing_to_cpa_rel)
                     
-                    cpa_rel_x = distance_to_cpa * np.cos(bearing_to_cpa_rad)
-                    cpa_rel_y = distance_to_cpa * np.sin(bearing_to_cpa_rad)
                     
-                    cpa_rel_x_normalized = np.clip(cpa_rel_x / OBS_DISTANCE, -1.0, 1.0)
-                    cpa_rel_y_normalized = np.clip(cpa_rel_y / OBS_DISTANCE, -1.0, 1.0)
                 except Exception as e:
                     logger.debug(f"Error computing CPA position for {intruder_id}: {e}")
             
@@ -272,26 +286,32 @@ class BaseCrossingEnv:
             agent.cpa_position_map[intruder_id] = (cpa_lat_cached, cpa_lon_cached)
             
             features_list = [
-                distance_normalized,
+                distance_nm,
                 bearing_cos, bearing_sin,
-                closing_rate_normalized,
-                min_sep_normalized,
-                time_to_min_sep_normalized,
-                cpa_rel_x_normalized,
-                cpa_rel_y_normalized,
+                closing_rate,
+                min_separation,
+                time_to_min_sep,
                 int_tas,
                 int_rel_lat, int_rel_lon
             ]
             
-            base_idx = idx * 11
-            intruder_features[base_idx:base_idx+11] = features_list
+            base_idx = idx * 9
+            intruder_features[base_idx:base_idx+9] = features_list
         
         return intruder_features
     
     # ==================== OBSERVATION GENERATION ====================
     
     def _get_observation_dict(self, agent: Optional[Agent] = None) -> Dict[str, np.ndarray]:
-        """Get observation dictionary"""
+        """
+        Get observation dictionary with all components
+        
+        Returns dict with:
+        - ego_state: (6) Heading, Speed, Drift, V-Sep, Distance to Waypoint
+        - threat_features: (NUM_AC_STATE*9) Intruder Features (9 per intruder)
+        - action_history: (5) Last Action, Age, Turn Rate, Speed Action
+        - multi_heading_cpa: (NUM_HEADING_OFFSETS) Min time_to_cpa for each heading offset
+        """
         if agent is None:
             agent = self.all_agents.get_active_agent()
         
@@ -304,12 +324,14 @@ class BaseCrossingEnv:
         
         speed_normalized = agent.speed_normalized
         drift_normalized = agent.drift_normalized
+        vertical_separation_normalized = 1.0
         distance_to_waypoint_normalized = agent.distance_to_waypoint_normalized
         
         ego_state = np.array([
             ego_hdg_cos, ego_hdg_sin,
             speed_normalized,
             drift_normalized,
+            vertical_separation_normalized,
             distance_to_waypoint_normalized
         ], dtype=np.float32)
         
@@ -319,9 +341,13 @@ class BaseCrossingEnv:
         # Multi-Heading CPA
         multi_heading_cpa = self._compute_multi_heading_cpa_features(agent, ac_lat, ac_lon, ac_hdg, ac_tas)
         
+        # Action History
+        action_history = self._compute_action_history(agent)
+        
         return {
             'ego_state': ego_state,
             'threat_features': threat_features,
+            'action_history': action_history,
             'multi_heading_cpa': multi_heading_cpa
         }
     
@@ -335,6 +361,7 @@ class BaseCrossingEnv:
         flat_obs = np.concatenate([
             obs_dict['ego_state'],
             obs_dict['threat_features'],
+            obs_dict['action_history'],
             obs_dict['multi_heading_cpa']
         ])
         return flat_obs
@@ -905,7 +932,7 @@ class BaseCrossingEnv:
         
         # Ego State
         ego_state = obs_dict['ego_state']
-        text = f"EGO: Hdg({ego_state[0]:+.2f},{ego_state[1]:+.2f}) Spd({ego_state[2]:+.2f}) Drift({ego_state[3]:+.2f}) VrtSep({ego_state[4]:+.2f}) DstWp({ego_state[5]:+.2f})"
+        text = f"EGO: Hdg({ego_state[0]:+.2f},{ego_state[1]:+.2f}) Spd({ego_state[2]:+.2f}) Drift({ego_state[3]:+.2f}) DstWp({ego_state[4]:+.2f})"
         text_surf = font_small.render(text, True, (0, 0, 0))
         canvas.blit(text_surf, (debug_x_left, debug_y))
         debug_y += 18
@@ -918,15 +945,15 @@ class BaseCrossingEnv:
         debug_y += 18
         
         for slot_idx in range(NUM_AC_STATE):
-            slot_start = slot_idx * 8
-            slot_data = threat_features[slot_start:slot_start+8]
+            slot_start = slot_idx * 9
+            slot_data = threat_features[slot_start:slot_start+9]
             
             intruder_id = active_agent.selected_intruder_ids[slot_idx] if slot_idx < len(active_agent.selected_intruder_ids) else "FILLER"
-            is_filler = np.allclose(slot_data, [1.0, -1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0], atol=0.05)
+            is_filler = np.allclose(slot_data[:6], [1.0, -1.0, 0.0, 0.0, 1.0, 1.0], atol=0.05)
             slot_type = "FILL" if is_filler else "THREAT"
             color = (100, 100, 100) if is_filler else (255, 100, 0)
             
-            text = f"  [{slot_idx}]{intruder_id}({slot_type}): Dst({slot_data[0]:+.2f}) Brg({slot_data[1]:+.2f},{slot_data[2]:+.2f}) CR({slot_data[3]:+.2f}) MinSep({slot_data[4]:+.2f}) T({slot_data[5]:+.2f}) CPA({slot_data[6]:+.2f},{slot_data[7]:+.2f})"
+            text = f"  [{slot_idx}]{intruder_id}({slot_type}): Dst({slot_data[0]:+.2f}) Brg({slot_data[1]:+.2f},{slot_data[2]:+.2f}) CR({slot_data[3]:+.2f}) MinSep({slot_data[4]:+.2f}) T({slot_data[5]:+.2f}) TAS({slot_data[6]:+.0f}) Rel({slot_data[7]:+.3f},{slot_data[8]:+.3f})"
             text_surf = font_small.render(text, True, color)
             canvas.blit(text_surf, (debug_x_left, debug_y))
             debug_y += 16
