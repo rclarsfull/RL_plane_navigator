@@ -66,7 +66,7 @@ class Cross_env(gym.Env, BaseCrossingEnv):
         # threat_features: NUM_AC_STATE * 8 = 4 * 8 = 32
         # multi_heading_cpa: NUM_HEADING_OFFSETS (min time_to_cpa for each heading offset) = 9
         # Total: 6 + 32 + 9 = 47
-        obs_dim = 6 + NUM_AC_STATE * 8 + NUM_HEADING_OFFSETS
+        obs_dim = 5 + NUM_AC_STATE * 11 + NUM_HEADING_OFFSETS
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -91,13 +91,11 @@ class Cross_env(gym.Env, BaseCrossingEnv):
             logger.debug(self._get_info())
             logger.debug(f"{'='*100}\n")
         
-
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
         
         self.sim.traf_reset()
-
         self.steps = 0
  
         self.num_episodes += 1
@@ -127,7 +125,6 @@ class Cross_env(gym.Env, BaseCrossingEnv):
         if self.all_agents.is_active_agent_finished():
             raise Exception("Active agent has already finished, this should not happen")
 
-        
         aktiv_agent = self.all_agents.get_active_agent()
         self._set_action(action, aktiv_agent)
 
@@ -188,7 +185,6 @@ class Cross_env(gym.Env, BaseCrossingEnv):
     def _get_reward(self):
         agent = self.all_agents.get_active_agent()
         
-
         distance_to_waypoint = agent.distance_to_waypoint_normalized if agent.distance_to_waypoint_normalized != 0.0 else float(1e-6)
         drift_normalized = agent.drift / np.pi  # [0, 1]
         drift_reward = (1.0 - drift_normalized)**2 * DRIFT_FACTOR / (distance_to_waypoint/ 2.0)

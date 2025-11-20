@@ -1,3 +1,30 @@
+crossing_planes_conti:
+  policy: "MlpPolicy"
+  n_timesteps: !!float 50e6
+  n_envs: 4                      
+  batch_size: 256             
+  n_steps: 512                                   
+  gamma: 0.96
+  normalize: "dict(norm_obs=True, norm_reward=True)"
+  env_wrapper:
+    - stable_baselines3.common.monitor.Monitor
+  callback:
+    - "custom_envs.info_logger_callback.LogAllInfoCallback"
+
+
+crossing_planes_abs:
+  policy: "MlpPolicy"
+  n_timesteps: !!float 60e6
+  n_envs: 12                      
+  batch_size: 256             
+  n_steps: 512                                   
+  gamma: 0.96
+  normalize: "dict(norm_obs=True, norm_reward=True)"
+  env_wrapper:
+    - stable_baselines3.common.monitor.Monitor
+  callback:
+    - "custom_envs.info_logger_callback.LogAllInfoCallback"
+
 # Tuned
 MountainCarContinuous-v0:
   n_timesteps: !!float 50000

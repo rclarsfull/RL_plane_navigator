@@ -4,7 +4,7 @@ import numpy as np
 TARGET_DISTANCE_MARGIN = 5  # NM
 INTRUSION_DISTANCE = 5  # NM
 
-CPA_WARNING_FACTOR = 20.0
+CPA_WARNING_FACTOR = 15.0 #20
 LONG_CONFLICT_THRESHOLD_SEC = 600.0  
 DRIFT_FACTOR = 1  
 ACTION_AGE_FACTOR = 0.25  
@@ -21,13 +21,14 @@ TIME_LIMIT = 60 * 60
 D_HEADING = 180
 D_SPEED = 10  # m/s speed change per action (±10 m/s)
 SPEED_STABILITY_REWARD = 0.05  # Reward für nicht-ändern der Geschwindigkeit
+NOOP_REWARD = 0.1  # Flat reward for every NOOP action
 FLIGHT_LEVEL = 245
 MAX_SPEED = 254
 MIN_SPEED = 250
 
 
 DANGER_CLOSING_THRESHOLD = 0.0  # m/s: closing_rate < 0 = closing
-DANGER_MIN_SEP_THRESHOLD = 15  # NM: max safe separation
+DANGER_MIN_SEP_THRESHOLD = 7  # NM: max safe separation
 OBS_DISTANCE = 100.0
 
 CENTER_LAT = 49.9915
