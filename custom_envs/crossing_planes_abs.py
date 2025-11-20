@@ -266,7 +266,6 @@ class Cross_env(gym.Env):
         
         n_intruders = len(intruder_lats)
         
-        # Berechne Bearings + Distances (UNVERMEIDBAR - Simulator Call)
         bearings = np.zeros(n_intruders, dtype=np.float64)
         distances = np.zeros(n_intruders, dtype=np.float64)
         for i in range(n_intruders):
@@ -274,8 +273,6 @@ class Cross_env(gym.Env):
                 ac_lat, ac_lon, intruder_lats[i], intruder_lons[i]
             )
         
-        # ⚡ NUMBA-OPTIMIERTE MULTI-HEADING CPA-BERECHNUNG (returniert 2D-Arrays!)
-        # Shape: [n_intruders, NUM_HEADING_OFFSETS]
         min_seps, t_cpas, c_rates = compute_cpa_multi_heading_numba(
             ac_hdg, ac_tas,
             intruder_hdgs, intruder_tas_array,
@@ -284,12 +281,8 @@ class Cross_env(gym.Env):
             HEADING_OFFSETS
         )
         
-        # ⚡ VEKTORISIERTE KRITIKALITÄTSPRÜFUNG mit _is_actual_danger()
-        # Shape: [n_intruders, NUM_HEADING_OFFSETS] - True = kritischer Konflikt
         is_critical = self._is_actual_danger(c_rates, t_cpas, min_seps)
-        
-        # ⚡ VEKTORISIERTE MIN-BERECHNUNG: Für jeden Offset die minimale time_to_cpa
-        # Trick: Setze nicht-kritische Konflikte auf inf, dann np.min pro Spalte
+
         t_cpas_masked = np.where(is_critical, t_cpas, np.inf)
         min_critical_times = np.min(t_cpas_masked, axis=0)  # Shape: [NUM_HEADING_OFFSETS]
         
@@ -317,7 +310,6 @@ class Cross_env(gym.Env):
                                         intruder_lat, intruder_lon, intruder_hdg, intruder_tas, intruder_turning_rate):
         """
         Berechnet Kollisions-Rohwerte: min_separation, time_to_min_sep, closing_rate.
-        OPTIMIERT: Nur essenzielle Numpy-Operationen, Logging-Overhead reduziert.
         """
         is_debug = logger.isEnabledFor(logging.DEBUG)
         
