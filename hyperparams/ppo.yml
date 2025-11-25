@@ -1,6 +1,6 @@
 crossing_planes:
   policy: "MlpPolicy"
-  n_timesteps: !!float 1.5e6
+  n_timesteps: !!float 0.4e6
   n_envs: 12                      
   batch_size: 256             
   n_steps: 512                  

@@ -1,8 +1,8 @@
 crossing_planes:
   policy: "MlpLstmPolicy"
-  n_timesteps: !!float 1.5e6
+  n_timesteps: !!float 5e6
   n_envs: 12                      
-  batch_size: 256             
+  batch_size: 240             
   n_steps: 512                  
   n_epochs: 3                    
   gamma: 0.96
@@ -11,11 +11,13 @@ crossing_planes:
     - stable_baselines3.common.monitor.Monitor
   callback:
     - "custom_envs.info_logger_callback.LogAllInfoCallback"
-  policy_kwargs: "dict(net_arch=dict(
-                          pi=[256, 256],  
-                          vf=[256, 256]    
-                        )
-                      )"
+  policy_kwargs: "dict(
+                    lstm_hidden_size=32,
+                    enable_critic_lstm=True,
+                    activation_fn=nn.ReLU,
+                    ortho_init=False,
+                    net_arch=dict(pi=[128, 128], vf=[128, 128])
+                  )"
 atari:
   env_wrapper:
     - stable_baselines3.common.atari_wrappers.AtariWrapper:

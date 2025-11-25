@@ -63,7 +63,7 @@ class BaseCrossingEnv:
             self.clock = pygame.time.Clock()
         
         # Camera and trails
-        self.agent_trails = {}
+        self.agent_trails = {}  # {agent_id: [(x,y,is_noop), ...]}
         self.camera = Camera(center_lat=center_lat, center_lon=center_lon, zoom_km=667)
     
     # ==================== COLLISION DETECTION ====================
@@ -128,8 +128,15 @@ class BaseCrossingEnv:
     def _compute_multi_heading_cpa_features(
         self, agent: Agent, ac_lat: float, ac_lon: float, ac_hdg: float, ac_tas: float
     ) -> np.ndarray:
-        """Compute multi-heading CPA features (vectorized)"""
-        multi_heading_cpa_features = np.ones(NUM_HEADING_OFFSETS, dtype=np.float32)
+        """Compute multi-heading CPA features (vectorized)
+
+        Rückgabeformat: Länge = NUM_HEADING_OFFSETS + 1
+        - Indizes 0..(NUM_HEADING_OFFSETS-1): fixe Offsets gemäß HEADING_OFFSETS
+        - Letzter Index: hypothetische Ausrichtung direkt zum Ziel-Heading (Bearing zum nächsten Waypoint)
+        Wertebereich jeweils in [0,1]: größer = weniger kritisch (länger bis zur minimalen Separation)
+        """
+        features_len = NUM_HEADING_OFFSETS + 1
+        multi_heading_cpa_features = np.ones(features_len, dtype=np.float32)
         
         if not hasattr(agent, 'intruder_state_map') or len(agent.intruder_state_map) == 0:
             return multi_heading_cpa_features
@@ -152,22 +159,40 @@ class BaseCrossingEnv:
                 ac_lat, ac_lon, intruder_lats[i], intruder_lons[i]
             )
         
+        # Erzeuge Offsets-Array: fixe Offsets + (optional) Ziel-Heading in einem Durchlauf
+        include_goal = True
+        try:
+            waypoint = self.getNextWaypoint(agent)
+            target_dir_deg, _ = self.sim.geo_calculate_direction_and_distance(ac_lat, ac_lon, waypoint.lat, waypoint.lon)
+            target_offset = bound_angle_positive_negative_180(target_dir_deg - ac_hdg)
+            offsets_combined = np.concatenate([HEADING_OFFSETS, np.array([target_offset], dtype=np.float64)])
+        except Exception as e:
+            logger.debug(f"Goal-CPA bearing computation failed, skipping goal offset: {e}")
+            offsets_combined = HEADING_OFFSETS
+            include_goal = False
+
         min_seps, t_cpas, c_rates = compute_cpa_multi_heading_numba(
             ac_hdg, ac_tas,
             intruder_hdgs, intruder_tas_array,
             bearings, distances,
             INTRUSION_DISTANCE,
-            HEADING_OFFSETS
+            offsets_combined
         )
-        
+
         is_critical = self._is_actual_danger(c_rates, t_cpas, min_seps)
         t_cpas_masked = np.where(is_critical, t_cpas, np.inf)
         min_critical_times = np.min(t_cpas_masked, axis=0)
-        
-        valid_mask = min_critical_times < np.inf
-        multi_heading_cpa_features[valid_mask] = np.clip(
-            min_critical_times[valid_mask] / LONG_CONFLICT_THRESHOLD_SEC, 0.0, 1.0
-        )
+
+        norm_vals = np.ones(offsets_combined.shape[0], dtype=np.float32)
+        sel_mask = np.isfinite(min_critical_times)
+        norm_vals[sel_mask] = np.clip(min_critical_times[sel_mask] / LONG_CONFLICT_THRESHOLD_SEC, 0.0, 1.0)
+
+        # Schreibe Basis-Offsets
+        base_count = NUM_HEADING_OFFSETS
+        multi_heading_cpa_features[:base_count] = norm_vals[:base_count]
+        # Schreibe ggf. Ziel-Heading-Wert an letzte Position
+        if include_goal and norm_vals.shape[0] > base_count:
+            multi_heading_cpa_features[base_count] = norm_vals[base_count]
         
         del bearings, distances, min_seps, t_cpas, c_rates, is_critical, t_cpas_masked
         return multi_heading_cpa_features
@@ -175,28 +200,12 @@ class BaseCrossingEnv:
     # ==================== INTRUDER SELECTION & FEATURES ====================
     
     def _compute_action_history(self, agent: Agent) -> np.ndarray:
-        """
-        Compute action history features (5 features):
-        - last_action_do: [0, 1] - War letzte Aktion ein Lenken?
-        - last_action_continuous: [-1, 1] - Lenkintensität
-        - action_age_normalized: [0, 1] - Alter der Aktion
-        - turning_rate_normalized: [-1, 1] - Aktuelle Rotationsrate
-        - last_action_speed: [-1, 0, 1] - Normalisiert (0=Beschleunigen, 1=Nichts, 2=Verlangsamen)
-        """
-        last_action_do = float(agent.last_action)
-        last_action_continuous = float(agent.last_action_continuous)
-        action_age_normalized = float(agent.action_age)
-        turning_rate_normalized = float(agent.turning_rate)
-        
-        # Speed action normalisiert: 0→-1 (Beschleunigen), 1→0 (Nichts), 2→+1 (Verlangsamen)
-        speed_action_normalized = float(agent.last_action_speed) - 1.0
-        
+        """Compute action history features for observation"""
         return np.array([
-            last_action_do, 
-            last_action_continuous, 
-            action_age_normalized,
-            turning_rate_normalized,
-            speed_action_normalized
+            agent.last_action, 
+            agent.last_action_continuous, 
+            agent.action_age,
+            agent.turning_rate
         ], dtype=np.float32)
     
     def _select_intruders_by_cpa(
@@ -573,24 +582,34 @@ class BaseCrossingEnv:
         if len(agent_positions) > 0:
             self.camera.fixed_camera(CENTER_LAT, CENTER_LON)
 
-        # Draw agent trails
+        # Draw agent trails (farblich nach Aktionstyp: noop=rot, steer=grün, snap=blau)
         for agent in self.all_agents.get_all_agents():
             lat, lon, hdg, tas = self.sim.traf_get_state(agent.id)
             x_pos, y_pos = self.camera.latlon_to_screen(self.sim, lat, lon, self.window_width, self.window_height)
-            
+
             if agent.id not in self.agent_trails:
                 self.agent_trails[agent.id] = []
 
             if x_pos is not None and y_pos is not None:
-                self.agent_trails[agent.id].append((int(x_pos), int(y_pos)))
+                action_type = getattr(agent, 'last_action_type', 'noop')
+                self.agent_trails[agent.id].append((int(x_pos), int(y_pos), action_type))
                 if len(self.agent_trails[agent.id]) > MAX_AGENT_TRAILS:
                     self.agent_trails[agent.id].pop(0)
 
             if len(self.agent_trails[agent.id]) > 1:
-                valid_trail = [(int(x), int(y)) for x, y in self.agent_trails[agent.id] 
-                              if isinstance(x, int) and isinstance(y, int)]
-                if len(valid_trail) > 1:
-                    pygame.draw.lines(canvas, (0, 120, 255), False, valid_trail, 1)
+                trail_points = self.agent_trails[agent.id]
+                for i in range(len(trail_points) - 1):
+                    x1, y1, _ = trail_points[i]
+                    x2, y2, action_type_end = trail_points[i + 1]
+                    if not (isinstance(x1, int) and isinstance(y1, int) and isinstance(x2, int) and isinstance(y2, int)):
+                        continue
+                    if action_type_end == 'noop':
+                        seg_color = (255, 0, 0)
+                    elif action_type_end == 'snap':
+                        seg_color = (0, 120, 255)
+                    else:  # steer
+                        seg_color = (0, 180, 0)
+                    pygame.draw.line(canvas, seg_color, (x1, y1), (x2, y2), 2)
 
         # Draw routes and waypoints
         for agent in self.all_agents.get_all_agents():
@@ -655,76 +674,84 @@ class BaseCrossingEnv:
             active_agent.update_observation_cache(self)
         
         # Draw intruders/threats
-        if active_agent and hasattr(active_agent, 'selected_intruder_ids') and active_agent.selected_intruder_ids:
-            font_obs = pygame.font.SysFont(None, 14)
-            
-            for slot_idx, intruder_id in enumerate(active_agent.selected_intruder_ids):
-                if not hasattr(active_agent, 'intruder_state_map'):
-                    continue
-                if intruder_id not in active_agent.intruder_state_map:
-                    continue
-                
-                int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
-                int_x, int_y = self.camera.latlon_to_screen(self.sim, int_lat, int_lon, self.window_width, self.window_height)
-                
-                if int_x is None or int_y is None:
-                    continue
-                
-                if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
-                    continue
-                
-                obs_color = (255, 165, 0)  # Default: Orange
-                marker_size = 12
-                ring_width = 3
-                
-                if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
-                    collision_info = active_agent.intruder_collision_cache[intruder_id]
-                    time_to_min_sep = collision_info.get('time_to_min_sep', 0)
-                    closing_rate = collision_info.get('closing_rate', 0)
-                    min_separation = collision_info.get('min_separation', 100)
+        if active_agent:
+            # Collect all intruders (selected + others) so warnings are not lost
+            all_intruder_ids = []
+            if hasattr(active_agent, 'intruder_collision_cache'):
+                all_intruder_ids = list(active_agent.intruder_collision_cache.keys())
+            selected_set = set(getattr(active_agent, 'selected_intruder_ids', []))
 
-                    is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
-                    if is_real_threat:
-                        obs_color = (255, 0, 0)  # ROT für echte Konflikte
-                        marker_size = 14
-                        ring_width = 3
+            # First render selected intruders (keep existing layout & slot numbering)
+            if hasattr(active_agent, 'selected_intruder_ids') and active_agent.selected_intruder_ids:
+                font_obs = pygame.font.SysFont(None, 14)
                 
-                pygame.draw.circle(canvas, obs_color, (int(int_x), int(int_y)), marker_size, ring_width)
-                
-                slot_text = f"[{slot_idx}]"
-                text_surface = font_obs.render(slot_text, True, obs_color)
-                text_x = int_x + marker_size + 3
-                text_y = int_y - 8
-                canvas.blit(text_surface, (int(text_x), int(text_y)))
-                
-                id_text = intruder_id[-3:]
-                text_surface = font_obs.render(id_text, True, obs_color)
-                text_x = int_x + marker_size + 3
-                text_y = int_y + 5
-                canvas.blit(text_surface, (int(text_x), int(text_y)))
-                
-                if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
-                    collision_info = active_agent.intruder_collision_cache[intruder_id]
-                    time_to_min_sep = collision_info.get('time_to_min_sep', 0)
-                    closing_rate = collision_info.get('closing_rate', 0)
-                    min_separation = collision_info.get('min_separation', 100)
+                for slot_idx, intruder_id in enumerate(active_agent.selected_intruder_ids):
+                    if not hasattr(active_agent, 'intruder_state_map'):
+                        continue
+                    if intruder_id not in active_agent.intruder_state_map:
+                        continue
                     
-                    logger.debug(f"[RENDER] Slot {slot_idx} ({intruder_id}): min_sep={min_separation:.2f}NM, time={time_to_min_sep:.1f}s, cr={closing_rate:+.2f}m/s")
+                    int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
+                    int_x, int_y = self.camera.latlon_to_screen(self.sim, int_lat, int_lon, self.window_width, self.window_height)
                     
-                    cpa_font = pygame.font.SysFont(None, 16)
+                    if int_x is None or int_y is None:
+                        continue
                     
-                    if time_to_min_sep < 0:
-                        time_text = f"t:PAST {time_to_min_sep:.0f}s"
-                    elif time_to_min_sep >= 900:
-                        time_text = f"t:900s+"
-                    else:
-                        time_text = f"t:{time_to_min_sep:.1f}s"
-                    time_surface = cpa_font.render(time_text, True, obs_color)
-                    canvas.blit(time_surface, (int(int_x) + marker_size + 3, int(int_y) + 15))
+                    if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
+                        continue
                     
-                    cr_text = f"cr:{closing_rate:+.2f}m/s"
-                    cr_surface = cpa_font.render(cr_text, True, obs_color)
-                    canvas.blit(cr_surface, (int(int_x) + marker_size + 3, int(int_y) + 30))
+                    obs_color = (255, 165, 0)  # Default: Orange
+                    marker_size = 12
+                    ring_width = 3
+                    
+                    if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
+                        collision_info = active_agent.intruder_collision_cache[intruder_id]
+                        time_to_min_sep = collision_info.get('time_to_min_sep', 0)
+                        closing_rate = collision_info.get('closing_rate', 0)
+                        min_separation = collision_info.get('min_separation', 100)
+
+                        is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
+                        if is_real_threat:
+                            obs_color = (255, 0, 0)  # ROT für echte Konflikte
+                            marker_size = 14
+                            ring_width = 3
+                    
+                    pygame.draw.circle(canvas, obs_color, (int(int_x), int(int_y)), marker_size, ring_width)
+                    
+                    slot_text = f"[{slot_idx}]"
+                    text_surface = font_obs.render(slot_text, True, obs_color)
+                    text_x = int_x + marker_size + 3
+                    text_y = int_y - 8
+                    canvas.blit(text_surface, (int(text_x), int(text_y)))
+                    
+                    id_text = intruder_id[-3:]
+                    text_surface = font_obs.render(id_text, True, obs_color)
+                    text_x = int_x + marker_size + 3
+                    text_y = int_y + 5
+                    canvas.blit(text_surface, (int(text_x), int(text_y)))
+                    
+                    if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
+                        collision_info = active_agent.intruder_collision_cache[intruder_id]
+                        time_to_min_sep = collision_info.get('time_to_min_sep', 0)
+                        closing_rate = collision_info.get('closing_rate', 0)
+                        min_separation = collision_info.get('min_separation', 100)
+                        
+                        logger.debug(f"[RENDER] Slot {slot_idx} ({intruder_id}): min_sep={min_separation:.2f}NM, time={time_to_min_sep:.1f}s, cr={closing_rate:+.2f}m/s")
+                        
+                        cpa_font = pygame.font.SysFont(None, 16)
+                        
+                        if time_to_min_sep < 0:
+                            time_text = f"t:PAST {time_to_min_sep:.0f}s"
+                        elif time_to_min_sep >= 900:
+                            time_text = f"t:900s+"
+                        else:
+                            time_text = f"t:{time_to_min_sep:.1f}s"
+                        time_surface = cpa_font.render(time_text, True, obs_color)
+                        canvas.blit(time_surface, (int(int_x) + marker_size + 3, int(int_y) + 15))
+                        
+                        cr_text = f"cr:{closing_rate:+.2f}m/s"
+                        cr_surface = cpa_font.render(cr_text, True, obs_color)
+                        canvas.blit(cr_surface, (int(int_x) + marker_size + 3, int(int_y) + 30))
 
                     min_sep_text = f"sep:{min_separation:.2f}NM"
                     min_sep_surface = cpa_font.render(min_sep_text, True, obs_color)
@@ -746,6 +773,44 @@ class BaseCrossingEnv:
                                         pygame.draw.line(canvas, cpa_point_color, (int(active_x), int(active_y)), (int(cpa_x), int(cpa_y)), 1)
                 else:
                     logger.debug(f"[RENDER] Slot {slot_idx} ({intruder_id}): NO collision_info in cache!")
+
+            # Render remaining (non-selected) intruders so their warnings are visible
+            font_other = pygame.font.SysFont(None, 12)
+            for intruder_id in all_intruder_ids:
+                if intruder_id in selected_set:
+                    continue  # already rendered above
+                if not hasattr(active_agent, 'intruder_state_map'):
+                    continue
+                if intruder_id not in active_agent.intruder_state_map:
+                    continue
+                int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
+                int_x, int_y = self.camera.latlon_to_screen(self.sim, int_lat, int_lon, self.window_width, self.window_height)
+                if int_x is None or int_y is None:
+                    continue
+                if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
+                    continue
+
+                # Default subtle grey; escalate color if dangerous
+                base_color = (140, 140, 140)
+                marker_size = 9
+                ring_width = 2
+                collision_info = active_agent.intruder_collision_cache.get(intruder_id, {})
+                closing_rate = collision_info.get('closing_rate', 0)
+                time_to_min_sep = collision_info.get('time_to_min_sep', 0)
+                min_separation = collision_info.get('min_separation', 999)
+                is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
+                if is_real_threat:
+                    base_color = (255, 0, 0)
+                    marker_size = 11
+                elif collision_info.get('future_collision', False):
+                    base_color = (255, 165, 0)
+
+                pygame.draw.circle(canvas, base_color, (int(int_x), int(int_y)), marker_size, ring_width)
+                id_text = intruder_id[-3:]
+                txt = font_other.render(id_text, True, base_color)
+                canvas.blit(txt, (int(int_x) + marker_size + 2, int(int_y) - 6))
+
+        # (Removed NOOP slots box and NOOP action label per user request)
 
         # Draw aircraft
         for agent in self.all_agents.get_all_agents():
@@ -833,6 +898,8 @@ class BaseCrossingEnv:
             text_x = x_pos + radius_px + 5
             text_y = y_pos - 10
             canvas.blit(text_surface, (int(text_x), int(text_y)))
+
+            # (Reward box + separate noop point markers removed per user request)
 
         # Time display
         sim_time = self.steps * AGENT_INTERACTION_TIME
@@ -1021,3 +1088,8 @@ class BaseCrossingEnv:
         if self.window is not None:
             pygame.quit()
             self.window = None
+
+    def _set_action(self, action, agent: Agent) -> None:
+        """Set the action for the agent (heading change)"""
+        agent.action_age += 1
+        

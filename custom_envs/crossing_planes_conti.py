@@ -276,6 +276,7 @@ class Cross_env(gym.Env, BaseCrossingEnv):
         return reward
 
     def _set_action(self, action, agent: Agent) -> None:
+        BaseCrossingEnv._set_action(self, action, agent) 
         heading_change = float(np.clip(action[0], -1.0, 1.0))
 
         dh = heading_change * D_HEADING

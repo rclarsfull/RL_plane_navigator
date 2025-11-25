@@ -70,12 +70,17 @@ class Cross_env(gym.Env, BaseCrossingEnv):
 
         self.action_markers = {}
 
-        obs_dim = 6 + NUM_AC_STATE * 9 + 5 + NUM_HEADING_OFFSETS
+        # +1: zusätzlicher CPA-Feature-Eintrag für Ziel-Heading
+        obs_dim = 10 + NUM_AC_STATE * 9 + (NUM_HEADING_OFFSETS + 1)
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
-        self.action_space = gym.spaces.MultiDiscrete([2, 180])
+
+        self.num_steer_bins = 37  
+        self.action_space = gym.spaces.MultiDiscrete([3, self.num_steer_bins])
+        # Erzeuge exponentiell verteilte Winkel-Bins (symmetrisch um 0°)
+        self.steer_angle_bins = self._build_steer_angle_bins(alpha=3.0)
 
         self.total_reward = 0.0
         self.num_episodes = 0
@@ -287,8 +292,6 @@ class Cross_env(gym.Env, BaseCrossingEnv):
                         f"waypoints_collected={agent.waypoints_collected} | factor={waypoint_factor:.1f} | "
                         f"reward={proximity_reward:+.3f}")
         
-        # === NOOP REWARD ===
-        # Flache Belohnung für jede NOOP-Aktion (ermutigt Agent, weniger zu steuern)
         noop_reward = 0.0
         if agent.is_noop:
             noop_reward = NOOP_REWARD
@@ -336,33 +339,32 @@ class Cross_env(gym.Env, BaseCrossingEnv):
 
 
     def _set_action(self, action, agent: Agent) -> None:
+        """Verarbeitet MultiDiscrete Action: [do_action, steering_index]
+        do_action: 0 = NOOP, 1 = Steuerung
+        steering_index:
+            0..36  => relative Heading Änderung in 10° Schritten von -180° bis +180°
+            37     => Snap: Setzt Heading direkt auf Ziel-Heading (nächster Wegpunkt)
         """
-        Verarbeitet MultiDiscrete Action: [do_action, steering_direction]
-        do_action: 0=No-Op, 1=Steering
-        steering: 0-179 → [-1, 1] (180 Optionen = 2° pro Schritt)
-        """
-        do_action = int(action[0])
-        steering_index = int(action[1])
+        BaseCrossingEnv._set_action(self, action, agent)
+        action_type = int(action[0])  # 0=NOOP,1=SNAP,2=STEER
+        steering_index = int(action[1])  # nur genutzt wenn STEER
 
-        continuous_steering = (steering_index / 89.5) - 1.0
-        continuous_steering = np.clip(continuous_steering, -1.0, 1.0)
-        
-        agent.last_action_continuous = continuous_steering
-        self.last_continuous_action = continuous_steering
-        
         is_active_agent = (agent == self.all_agents.get_active_agent())
-        
-        # OPTIMIZATION: Only track action markers if rendering mode is enabled
+
+        # Für Render Logging: Hole aktuelle Position (falls nötig)
         if self.render_mode is not None:
             lat, lon, _, _ = self.sim.traf_get_state(agent.id)
             x_pos, y_pos = self.camera.latlon_to_screen(self.sim, lat, lon, self.window_width, self.window_height)
         else:
             x_pos, y_pos = None, None
-        
-        # Handle Heading Action
-        if do_action == 0:
+
+        if action_type == 0:  # NOOP
+            # NOOP Aktion
             agent.is_noop = True
             agent.last_action = 0
+            agent.last_action_continuous = 0.0
+            agent.last_action_type = 'noop'
+            self.last_continuous_action = 0.0
             if is_active_agent:
                 self.actions_noop_count += 1
             if self.render_mode is not None and x_pos is not None:
@@ -374,28 +376,92 @@ class Cross_env(gym.Env, BaseCrossingEnv):
                     agent.action_markers_with_steering.append((x_pos, y_pos, 'noop', 0.0, agent.action_age))
                     if len(agent.action_markers_with_steering) > MAX_ACTION_MARKERS:
                         agent.action_markers_with_steering.pop(0)
-        elif do_action == 1:
-            agent.is_noop = False
-            agent.last_action = 1
-            if is_active_agent:
+            return
+
+        # SNAP oder STEER Aktion
+        agent.is_noop = False
+        agent.last_action = 1
+        if is_active_agent:
+            if action_type == 1:
+                # optional separater Counter für Snap
+                if not hasattr(self, 'actions_snap_count'):
+                    self.actions_snap_count = 0
+                self.actions_snap_count += 1
+            elif action_type == 2:
                 self.actions_steer_count += 1
-            
-            if self.render_mode is not None and x_pos is not None:
-                if agent.id in self.action_markers:
-                    self.action_markers[agent.id].append((x_pos, y_pos, 'steer'))
-                    if len(self.action_markers[agent.id]) > MAX_ACTION_MARKERS:
-                        self.action_markers[agent.id].pop(0)
-                if hasattr(agent, 'action_markers_with_steering'):
-                    agent.action_markers_with_steering.append((x_pos, y_pos, 'steer', continuous_steering, agent.action_age))
-                    if len(agent.action_markers_with_steering) > MAX_ACTION_MARKERS:
-                        agent.action_markers_with_steering.pop(0)
-            
-            dh = continuous_steering * D_HEADING
-            _, _, current_heading, _ = self.sim.traf_get_state(agent.id)
-            heading_new = bound_angle_positive_negative_180(current_heading + dh)
-            self.sim.traf_set_heading(agent.id, heading_new)
-            agent.last_set_heading = heading_new
-            agent.action_age = 0
+
+        _, _, current_heading, _ = self.sim.traf_get_state(agent.id)
+
+        if action_type == 1:  # SNAP
+            waypoint = self.getNextWaypoint(agent)
+            target_dir, _ = self.sim.geo_calculate_direction_and_distance(agent.ac_lat, agent.ac_lon, waypoint.lat, waypoint.lon)
+            heading_new = bound_angle_positive_negative_180(target_dir)
+            rel_delta = bound_angle_positive_negative_180(heading_new - current_heading)
+            continuous_steering = float(np.clip(rel_delta / 180.0, -1.0, 1.0))
+            agent.last_action_type = 'snap'
+        elif action_type == 2:  # STEER (nichtlineare Winkel aus Lookup-Tabelle)
+            if steering_index < 0 or steering_index >= self.num_steer_bins:
+                rel_deg = 0.0
+            else:
+                rel_deg = float(self.steer_angle_bins[steering_index])
+            heading_new = bound_angle_positive_negative_180(current_heading + rel_deg)
+            continuous_steering = float(np.clip(rel_deg / 180.0, -1.0, 1.0))
+            agent.last_action_type = 'steer'
         else:
-            agent.is_noop = True
-            agent.last_action = 0
+            # Fallback (sollte nicht auftreten, da oben NOOP abgefangen)
+            heading_new = current_heading
+            continuous_steering = 0.0
+            agent.last_action_type = 'noop'
+
+        # Setze Heading im Simulator
+        self.sim.traf_set_heading(agent.id, heading_new)
+        agent.last_set_heading = heading_new
+        agent.action_age = 0
+        agent.last_action_continuous = continuous_steering
+        self.last_continuous_action = continuous_steering
+
+        if self.render_mode is not None and x_pos is not None:
+            marker_type = agent.last_action_type
+            if agent.id in self.action_markers:
+                self.action_markers[agent.id].append((x_pos, y_pos, marker_type))
+                if len(self.action_markers[agent.id]) > MAX_ACTION_MARKERS:
+                    self.action_markers[agent.id].pop(0)
+            if hasattr(agent, 'action_markers_with_steering'):
+                agent.action_markers_with_steering.append((x_pos, y_pos, marker_type, continuous_steering, agent.action_age))
+                if len(agent.action_markers_with_steering) > MAX_ACTION_MARKERS:
+                    agent.action_markers_with_steering.pop(0)
+            
+    def render(self):
+        BaseCrossingEnv.render(self,self.render_mode)
+        
+    def close(self):
+        BaseCrossingEnv.close(self)
+
+    def _build_steer_angle_bins(self, alpha: float = 3.0) -> np.ndarray:
+        """Erzeugt eine symmetrische Liste relativer Kursänderungen in Grad mit
+        exponentieller Verdichtung nahe 0°. alpha steuert die Krümmung:
+        Höher => stärkere Verdichtung um 0.
+
+        Index-Belegung:
+            0 .......... -> -max_angle
+            mid ........ -> 0°
+            last ........ -> +max_angle
+
+        Alle Zwischenwerte sind streng monoton steigend.
+        """
+        max_angle = 180.0
+        n = self.num_steer_bins
+        mid = n // 2  # enthält 0° bei ungerader Anzahl
+        angles = []
+        exp_max = np.exp(alpha) - 1.0
+        for i in range(n):
+            if i == mid:
+                angles.append(0.0)
+                continue
+            # Normalisiere Index auf [-1,1]
+            x = (i - mid) / mid  # -1 .. 1
+            mag = (np.exp(alpha * abs(x)) - 1.0) / exp_max  # 0 .. 1
+            angle = mag * max_angle * np.sign(x)
+            # Runde auf sinnvolle Grade (optional). Hier keine Rundung für feinere Differenzierung.
+            angles.append(angle)
+        return np.array(angles, dtype=np.float32)
