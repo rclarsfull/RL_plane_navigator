@@ -385,8 +385,41 @@ class BaseCrossingEnv:
             agents.add_agent(Agent(f'kl00{i+1}'.upper(), 0.0, False, 999.0, 0.0))
         return agents
     
-    def _generate_crossing_routes(self, center_lat, center_lon, n_agents, n_random_agents):
-        """Generate crossing routes with ring distribution"""
+    def _add_random_agents(self, routes_dict, center_lat, center_lon, n_agents, n_random_agents):
+        """Helper to add random agents to the scenario"""
+        outer_ring_radius_nm = 250
+        outer_ring_radius_km = outer_ring_radius_nm * NM2KM
+        
+        for random_agent_idx in range(n_random_agents):
+            agent_idx = n_agents + random_agent_idx
+            
+            offset_x_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+            offset_y_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+            start_lat = center_lat + (offset_x_km / 110.54)
+            start_lon = center_lon + (offset_y_km / 111.32)
+            
+            waypoints = deque()
+            
+            
+            for i in range(5):
+                offset_x_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+                offset_y_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+                wp_lat = center_lat + (offset_x_km / 110.54)
+                wp_lon = center_lon + (offset_y_km / 111.32)
+                waypoints.append(Waypoint(wp_lat, wp_lon))
+            
+            routes_dict[agent_idx] = {
+                'waypoints': waypoints,
+                'start_lat': start_lat,
+                'start_lon': start_lon,
+                'start_heading': random.uniform(0, 360),
+                'speed': random.uniform(MIN_SPEED, MAX_SPEED),
+                'ring_idx': -1
+            }
+        return routes_dict
+
+    def _generate_crossing_scenario(self, center_lat, center_lon, n_agents, n_random_agents):
+        """Generate crossing routes with ring distribution (Scenario 1)"""
         routes_dict = {}
         common_speed = random.uniform(MIN_SPEED, MAX_SPEED)
         
@@ -471,30 +504,120 @@ class BaseCrossingEnv:
                 'ring_idx': assigned_ring
             }
         
-        # Random agents
-        outer_ring_radius_nm = 145
-        outer_ring_radius_km = outer_ring_radius_nm * NM2KM
+        return self._add_random_agents(routes_dict, center_lat, center_lon, n_agents, n_random_agents)
+
+    def _generate_merging_scenario(self, center_lat, center_lon, n_agents, n_random_agents):
+        """Generate merging scenario: Agents converge to a common waypoint (Scenario 2)"""
+        routes_dict = {}
+        common_speed = random.uniform(MIN_SPEED, MAX_SPEED)
         
-        for random_agent_idx in range(n_random_agents):
-            agent_idx = n_agents + random_agent_idx
+        # Common exit point for all merging agents
+        exit_angle_deg = random.uniform(0, 360)
+        exit_angle_rad = np.deg2rad(exit_angle_deg)
+        exit_dist_km = 150.0
+        
+        exit_x_km = exit_dist_km * np.cos(exit_angle_rad)
+        exit_y_km = exit_dist_km * np.sin(exit_angle_rad)
+        exit_lat = center_lat + (exit_x_km / 110.54)
+        exit_lon = center_lon + (exit_y_km / 111.32)
+        
+        # Agents start in a sector "behind" the merge point
+        reciprocal_angle = (exit_angle_deg + 180) % 360
+        start_dist_km = 150.0
+        
+        # Distribute agents
+        angle_spread = 120.0 # degrees
+        if n_agents > 1:
+            angle_step = angle_spread / (n_agents - 1)
+            start_angles = [reciprocal_angle - (angle_spread/2) + i*angle_step for i in range(n_agents)]
+        else:
+            start_angles = [reciprocal_angle]
             
-            offset_x_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
-            offset_y_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
-            start_lat = center_lat + (offset_x_km / 110.54)
-            start_lon = center_lon + (offset_y_km / 111.32)
-            start_heading = random.uniform(0, 360)
+        for i, angle_deg in enumerate(start_angles):
+            angle_rad = np.deg2rad(angle_deg)
+            start_x_km = start_dist_km * np.cos(angle_rad)
+            start_y_km = start_dist_km * np.sin(angle_rad)
+            
+            start_lat = center_lat + (start_x_km / 110.54)
+            start_lon = center_lon + (start_y_km / 111.32)
             
             waypoints = deque()
-            
-            exit_heading = random.uniform(0, 360)
-            exit_distance_nm = random.uniform(50, 200)
-            exit_distance_km = exit_distance_nm * NM2KM
-            exit_angle_rad = np.deg2rad(exit_heading)
-            exit_x_km = exit_distance_km * np.cos(exit_angle_rad)
-            exit_y_km = exit_distance_km * np.sin(exit_angle_rad)
-            exit_lat = start_lat + (exit_x_km / 110.54)
-            exit_lon = start_lon + (exit_y_km / 111.32)
+            # Merge point
+            waypoints.append(Waypoint(center_lat, center_lon))
+            # Exit point
             waypoints.append(Waypoint(exit_lat, exit_lon))
+            
+            start_heading, _ = self.sim.geo_calculate_direction_and_distance(
+                start_lat, start_lon, center_lat, center_lon
+            )
+            
+            routes_dict[i] = {
+                'waypoints': waypoints,
+                'start_lat': start_lat,
+                'start_lon': start_lon,
+                'start_heading': start_heading,
+                'speed': common_speed,
+                'ring_idx': 0
+            }
+            
+        return self._add_random_agents(routes_dict, center_lat, center_lon, n_agents, n_random_agents)
+
+    def _generate_diverging_scenario(self, center_lat, center_lon, n_agents, n_random_agents):
+        """Generate diverging scenario: Agents start together and split (Scenario 3)"""
+        routes_dict = {}
+        common_speed = random.uniform(MIN_SPEED, MAX_SPEED)
+        
+        # Common start direction (incoming)
+        incoming_angle_deg = random.uniform(0, 360)
+        incoming_angle_rad = np.deg2rad(incoming_angle_deg)
+        start_dist_km = 150.0
+        
+        # Agents are spaced out along the incoming route
+        spacing_km = 10.0 * NM2KM
+        
+        # Exit angles spread out "forward"
+        exit_base_angle = (incoming_angle_deg + 180) % 360
+        angle_spread = 120.0
+        
+        if n_agents > 1:
+            angle_step = angle_spread / (n_agents - 1)
+            exit_angles = [exit_base_angle - (angle_spread/2) + i*angle_step for i in range(n_agents)]
+        else:
+            exit_angles = [exit_base_angle]
+        
+        # Randomize agent order so active agent isn't always first
+        position_order = list(range(n_agents))
+        random.shuffle(position_order)
+            
+        for agent_idx in range(n_agents):
+            position = position_order[agent_idx]
+            dist_from_center = start_dist_km + (position * spacing_km)
+            s_x = dist_from_center * np.cos(incoming_angle_rad)
+            s_y = dist_from_center * np.sin(incoming_angle_rad)
+            
+            start_lat = center_lat + (s_x / 110.54)
+            start_lon = center_lon + (s_y / 111.32)
+            
+            waypoints = deque()
+            # Diverge point (Center)
+            waypoints.append(Waypoint(center_lat, center_lon))
+            
+            # Individual Exit Point
+            ex_angle_deg = exit_angles[agent_idx]
+            ex_angle_rad = np.deg2rad(ex_angle_deg)
+            ex_dist_km = 150.0
+            
+            ex_x = ex_dist_km * np.cos(ex_angle_rad)
+            ex_y = ex_dist_km * np.sin(ex_angle_rad)
+            
+            exit_lat = center_lat + (ex_x / 110.54)
+            exit_lon = center_lon + (ex_y / 111.32)
+            
+            waypoints.append(Waypoint(exit_lat, exit_lon))
+            
+            start_heading, _ = self.sim.geo_calculate_direction_and_distance(
+                start_lat, start_lon, center_lat, center_lon
+            )
             
             routes_dict[agent_idx] = {
                 'waypoints': waypoints,
@@ -502,21 +625,38 @@ class BaseCrossingEnv:
                 'start_lon': start_lon,
                 'start_heading': start_heading,
                 'speed': common_speed,
-                'ring_idx': -1
+                'ring_idx': 0
             }
+            
+        return self._add_random_agents(routes_dict, center_lat, center_lon, n_agents, n_random_agents)
+
+    def _generate_mixed_scenario(self, center_lat, center_lon, n_agents, n_random_agents):
+        """Select one of the 3 scenarios based on probabilities"""
+        scenario_type = random.choices(
+            ['crossing', 'merging', 'diverging'],
+            weights=[0.4, 0.3, 0.3], 
+            k=1
+        )[0]
         
-        return routes_dict
+        logger.debug(f"Generating scenario: {scenario_type}")
+        
+        if scenario_type == 'crossing':
+            return self._generate_crossing_scenario(center_lat, center_lon, n_agents, n_random_agents)
+        elif scenario_type == 'merging':
+            return self._generate_merging_scenario(center_lat, center_lon, n_agents, n_random_agents)
+        else: # diverging
+            return self._generate_diverging_scenario(center_lat, center_lon, n_agents, n_random_agents)
     
     def _gen_aircraft(self, num_episodes: int):
         """Generate aircraft with randomized distribution"""
-        n_agents = random.randint(3, 7)
-        n_random_agents = random.randint(0, 3)
+        n_agents = random.randint(2, 4)
+        n_random_agents = random.randint(5, 15)
         
         logger.debug(f"Episode #{num_episodes}: Spawning {n_agents} ring agents + {n_random_agents} random agents")
         
         self.all_agents = self._create_agents(n_agents, n_random_agents)
         
-        routes_data = self._generate_crossing_routes(
+        routes_data = self._generate_mixed_scenario(
             center_lat=self.center_lat,
             center_lon=self.center_lon,
             n_agents=n_agents,
@@ -551,7 +691,7 @@ class BaseCrossingEnv:
             self.sim.traf_create(
                 agent.id,
                 actype="A320",
-                acspd=np.clip(speed + random.uniform(-5, 5), MIN_SPEED, MAX_SPEED),
+                acspd=speed,
                 aclat=start_lat,
                 aclon=start_lon,
                 achdg=start_heading,
@@ -575,389 +715,529 @@ class BaseCrossingEnv:
     
     def _render_frame(self):
         """Render the environment frame (shared across all environments)"""
-        canvas = pygame.Surface(self.window_size)
-        canvas.fill((169, 169, 169)) 
-
+        # Initialize canvas with RGBA support
+        canvas = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        canvas.fill((169, 169, 169, 255))
+        
+        # Update camera position
         agent_positions = self.sim.traf_get_all()[:2]
         if len(agent_positions) > 0:
             self.camera.fixed_camera(CENTER_LAT, CENTER_LON)
-
-        # Draw agent trails (farblich nach Aktionstyp: noop=rot, steer=grün, snap=blau)
+        
+        # Get active agent for later use
+        active_agent = self.all_agents.get_active_agent()
+        if active_agent:
+            active_agent.update_observation_cache(self)
+        
+        # Render layers in order
+        self._render_agent_trails(canvas)
+        #self._render_routes(canvas, active_agent)
+        self._render_waypoints(canvas, active_agent)
+        self._render_intruders(canvas, active_agent)
+        self._render_aircraft(canvas, active_agent)
+        self._render_ui_elements(canvas, active_agent)
+        
+        # Display and handle events
+        self.window.blit(canvas, canvas.get_rect())
+        pygame.display.update()
+        self.clock.tick(self.metadata["render_fps"])
+        self._handle_events()
+    
+    def _render_agent_trails(self, canvas):
+        """Render agent movement trails with color-coded action types"""
         for agent in self.all_agents.get_all_agents():
             lat, lon, hdg, tas = self.sim.traf_get_state(agent.id)
             x_pos, y_pos = self.camera.latlon_to_screen(self.sim, lat, lon, self.window_width, self.window_height)
-
+            
+            # Update trail data
             if agent.id not in self.agent_trails:
                 self.agent_trails[agent.id] = []
-
+            
             if x_pos is not None and y_pos is not None:
                 action_type = getattr(agent, 'last_action_type', 'noop')
                 self.agent_trails[agent.id].append((int(x_pos), int(y_pos), action_type))
                 if len(self.agent_trails[agent.id]) > MAX_AGENT_TRAILS:
                     self.agent_trails[agent.id].pop(0)
-
+            
+            # Draw trail segments directly on canvas (opaque for performance)
             if len(self.agent_trails[agent.id]) > 1:
                 trail_points = self.agent_trails[agent.id]
                 for i in range(len(trail_points) - 1):
                     x1, y1, _ = trail_points[i]
                     x2, y2, action_type_end = trail_points[i + 1]
-                    if not (isinstance(x1, int) and isinstance(y1, int) and isinstance(x2, int) and isinstance(y2, int)):
+                    
+                    if not (isinstance(x1, int) and isinstance(y1, int) and 
+                           isinstance(x2, int) and isinstance(y2, int)):
                         continue
+                    
+                    # Color by action type: noop=red, snap=blue, steer=green
                     if action_type_end == 'noop':
                         seg_color = (255, 0, 0)
                     elif action_type_end == 'snap':
                         seg_color = (0, 120, 255)
                     else:  # steer
                         seg_color = (0, 180, 0)
+                    
                     pygame.draw.line(canvas, seg_color, (x1, y1), (x2, y2), 2)
-
-        # Draw routes and waypoints
+    
+    def _render_routes(self, canvas, active_agent):
+        """Render planned route lines"""
+        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        
         for agent in self.all_agents.get_all_agents():
+            if len(agent.waypoint_queue) == 0:
+                continue
+            
             lat, lon, hdg, tas = self.sim.traf_get_state(agent.id)
             x_pos, y_pos = self.camera.latlon_to_screen(self.sim, lat, lon, self.window_width, self.window_height)
             
-            if len(agent.waypoint_queue) > 0:
-                waypoint_list = list(agent.waypoint_queue)
-                route_points = []
-                
-                if x_pos is not None and y_pos is not None:
+            # Build route points
+            route_points = []
+            if x_pos is not None and y_pos is not None:
+                try:
+                    route_points.append((x_pos, y_pos))
+                except (ValueError, TypeError):
+                    pass
+            
+            for waypoint in agent.waypoint_queue:
+                target_x, target_y = self.camera.latlon_to_screen(
+                    self.sim, waypoint.lat, waypoint.lon, self.window_width, self.window_height
+                )
+                if target_x is not None and target_y is not None:
                     try:
-                        route_points.append((x_pos, y_pos))
+                        route_points.append((target_x, target_y))
                     except (ValueError, TypeError):
                         pass
-                
-                for waypoint in waypoint_list:
-                    target_x, target_y = self.camera.latlon_to_screen(self.sim, waypoint.lat, waypoint.lon, self.window_width, self.window_height)
-                    if target_x is not None and target_y is not None:
-                        try:
-                            route_points.append((target_x, target_y))
-                        except (ValueError, TypeError):
-                            pass
-                
-                if len(route_points) >= 2:
-                    try:
-                        for i in range(len(route_points) - 1):
-                            x1, y1 = int(route_points[i][0]), int(route_points[i][1])
-                            x2, y2 = int(route_points[i+1][0]), int(route_points[i+1][1])
-                            pygame.draw.line(canvas, (0, 255, 0), (x1, y1), (x2, y2), 1)
-                    except Exception:
-                        pass
-                elif len(route_points) == 1:
-                    try:
-                        pygame.draw.circle(canvas, (0, 255, 0), (int(route_points[0][0]), int(route_points[0][1])), 5)
-                    except Exception:
-                        pass
             
-            if agent == self.all_agents.get_active_agent():
-                for waypoint_idx, waypoint in enumerate(agent.waypoint_queue):
-                    target_x, target_y = self.camera.latlon_to_screen(self.sim, waypoint.lat, waypoint.lon, self.window_width, self.window_height)
-                    
-                    if target_x is None or target_y is None:
-                        continue
-                    
-                    if waypoint_idx == 0:
-                        color = (255, 255, 255)  # Weiß für nächsten Wegpunkt
-                        radius = 6
-                    else:
-                        color = (100, 100, 100)  # Dunkelgrau für weitere
-                        radius = 4
-                    
-                    if 0 <= int(target_x) <= self.window_width and 0 <= int(target_y) <= self.window_height:
-                        pygame.draw.circle(canvas, color, (int(target_x), int(target_y)), radius=radius, width=0)
-                        target_margin_radius = (TARGET_DISTANCE_MARGIN * NM2KM / self.camera.zoom_km) * self.window_width
-                        if target_margin_radius > 2 and waypoint_idx == 0:
-                            pygame.draw.circle(canvas, color, (int(target_x), int(target_y)), radius=int(target_margin_radius), width=2)
-
-        active_agent = self.all_agents.get_active_agent()
-
-        if active_agent:
-            active_agent.update_observation_cache(self)
+            # Draw route lines
+            if len(route_points) >= 2:
+                try:
+                    for i in range(len(route_points) - 1):
+                        x1, y1 = int(route_points[i][0]), int(route_points[i][1])
+                        x2, y2 = int(route_points[i+1][0]), int(route_points[i+1][1])
+                        pygame.draw.line(overlay, (0, 255, 0, 65), (x1, y1), (x2, y2), 1)
+                except Exception:
+                    pass
+            elif len(route_points) == 1:
+                try:
+                    pygame.draw.circle(overlay, (0, 255, 0, 180), 
+                                     (int(route_points[0][0]), int(route_points[0][1])), 5)
+                except Exception:
+                    pass
         
-        # Draw intruders/threats
-        if active_agent:
-            # Collect all intruders (selected + others) so warnings are not lost
-            all_intruder_ids = []
-            if hasattr(active_agent, 'intruder_collision_cache'):
-                all_intruder_ids = list(active_agent.intruder_collision_cache.keys())
-            selected_set = set(getattr(active_agent, 'selected_intruder_ids', []))
-
-            # First render selected intruders (keep existing layout & slot numbering)
-            if hasattr(active_agent, 'selected_intruder_ids') and active_agent.selected_intruder_ids:
-                font_obs = pygame.font.SysFont(None, 14)
-                
-                for slot_idx, intruder_id in enumerate(active_agent.selected_intruder_ids):
-                    if not hasattr(active_agent, 'intruder_state_map'):
-                        continue
-                    if intruder_id not in active_agent.intruder_state_map:
-                        continue
-                    
-                    int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
-                    int_x, int_y = self.camera.latlon_to_screen(self.sim, int_lat, int_lon, self.window_width, self.window_height)
-                    
-                    if int_x is None or int_y is None:
-                        continue
-                    
-                    if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
-                        continue
-                    
-                    obs_color = (255, 165, 0)  # Default: Orange
-                    marker_size = 12
-                    ring_width = 3
-                    
-                    if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
-                        collision_info = active_agent.intruder_collision_cache[intruder_id]
-                        time_to_min_sep = collision_info.get('time_to_min_sep', 0)
-                        closing_rate = collision_info.get('closing_rate', 0)
-                        min_separation = collision_info.get('min_separation', 100)
-
-                        is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
-                        if is_real_threat:
-                            obs_color = (255, 0, 0)  # ROT für echte Konflikte
-                            marker_size = 14
-                            ring_width = 3
-                    
-                    pygame.draw.circle(canvas, obs_color, (int(int_x), int(int_y)), marker_size, ring_width)
-                    
-                    slot_text = f"[{slot_idx}]"
-                    text_surface = font_obs.render(slot_text, True, obs_color)
-                    text_x = int_x + marker_size + 3
-                    text_y = int_y - 8
-                    canvas.blit(text_surface, (int(text_x), int(text_y)))
-                    
-                    id_text = intruder_id[-3:]
-                    text_surface = font_obs.render(id_text, True, obs_color)
-                    text_x = int_x + marker_size + 3
-                    text_y = int_y + 5
-                    canvas.blit(text_surface, (int(text_x), int(text_y)))
-                    
-                    if hasattr(active_agent, 'intruder_collision_cache') and intruder_id in active_agent.intruder_collision_cache:
-                        collision_info = active_agent.intruder_collision_cache[intruder_id]
-                        time_to_min_sep = collision_info.get('time_to_min_sep', 0)
-                        closing_rate = collision_info.get('closing_rate', 0)
-                        min_separation = collision_info.get('min_separation', 100)
-                        
-                        logger.debug(f"[RENDER] Slot {slot_idx} ({intruder_id}): min_sep={min_separation:.2f}NM, time={time_to_min_sep:.1f}s, cr={closing_rate:+.2f}m/s")
-                        
-                        cpa_font = pygame.font.SysFont(None, 16)
-                        
-                        if time_to_min_sep < 0:
-                            time_text = f"t:PAST {time_to_min_sep:.0f}s"
-                        elif time_to_min_sep >= 900:
-                            time_text = f"t:900s+"
-                        else:
-                            time_text = f"t:{time_to_min_sep:.1f}s"
-                        time_surface = cpa_font.render(time_text, True, obs_color)
-                        canvas.blit(time_surface, (int(int_x) + marker_size + 3, int(int_y) + 15))
-                        
-                        cr_text = f"cr:{closing_rate:+.2f}m/s"
-                        cr_surface = cpa_font.render(cr_text, True, obs_color)
-                        canvas.blit(cr_surface, (int(int_x) + marker_size + 3, int(int_y) + 30))
-
-                    min_sep_text = f"sep:{min_separation:.2f}NM"
-                    min_sep_surface = cpa_font.render(min_sep_text, True, obs_color)
-                    canvas.blit(min_sep_surface, (int(int_x) + marker_size + 3, int(int_y) + 45))
-
-                    if time_to_min_sep > 0 and time_to_min_sep < LONG_CONFLICT_THRESHOLD_SEC:
-                        if hasattr(active_agent, 'cpa_position_map') and intruder_id in active_agent.cpa_position_map:
-                            cpa_lat, cpa_lon = active_agent.cpa_position_map[intruder_id]
-                            
-                            if cpa_lat is not None and cpa_lon is not None:
-                                active_lat, active_lon, _, _ = self.sim.traf_get_state(active_agent.id)
-                                active_x, active_y = self.camera.latlon_to_screen(self.sim, active_lat, active_lon, self.window_width, self.window_height)
-                                cpa_x, cpa_y = self.camera.latlon_to_screen(self.sim, cpa_lat, cpa_lon, self.window_width, self.window_height)
-                                
-                                if cpa_x is not None and cpa_y is not None and active_x is not None and active_y is not None:
-                                    if 0 <= cpa_x <= self.window_width and 0 <= cpa_y <= self.window_height:
-                                        cpa_point_color = (obs_color[0], obs_color[1], obs_color[2])
-                                        pygame.draw.circle(canvas, cpa_point_color, (int(cpa_x), int(cpa_y)), 6, 2)
-                                        pygame.draw.line(canvas, cpa_point_color, (int(active_x), int(active_y)), (int(cpa_x), int(cpa_y)), 1)
-                else:
-                    logger.debug(f"[RENDER] Slot {slot_idx} ({intruder_id}): NO collision_info in cache!")
-
-            # Render remaining (non-selected) intruders so their warnings are visible
-            font_other = pygame.font.SysFont(None, 12)
-            for intruder_id in all_intruder_ids:
-                if intruder_id in selected_set:
-                    continue  # already rendered above
-                if not hasattr(active_agent, 'intruder_state_map'):
-                    continue
-                if intruder_id not in active_agent.intruder_state_map:
-                    continue
-                int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
-                int_x, int_y = self.camera.latlon_to_screen(self.sim, int_lat, int_lon, self.window_width, self.window_height)
-                if int_x is None or int_y is None:
-                    continue
-                if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
-                    continue
-
-                # Default subtle grey; escalate color if dangerous
-                base_color = (140, 140, 140)
-                marker_size = 9
-                ring_width = 2
-                collision_info = active_agent.intruder_collision_cache.get(intruder_id, {})
-                closing_rate = collision_info.get('closing_rate', 0)
+        canvas.blit(overlay, (0, 0))
+    
+    def _render_waypoints(self, canvas, active_agent):
+        """Render waypoint markers for active agent"""
+        if not active_agent or len(active_agent.waypoint_queue) == 0:
+            return
+        
+        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        
+        for waypoint_idx, waypoint in enumerate(active_agent.waypoint_queue):
+            target_x, target_y = self.camera.latlon_to_screen(
+                self.sim, waypoint.lat, waypoint.lon, self.window_width, self.window_height
+            )
+            
+            if target_x is None or target_y is None:
+                continue
+            if not (0 <= int(target_x) <= self.window_width and 
+                   0 <= int(target_y) <= self.window_height):
+                continue
+            
+            # Next waypoint = white, others = dark grey
+            if waypoint_idx == 0:
+                color = (255, 255, 255, 255)
+                radius = 6
+            else:
+                color = (100, 100, 100, 180)
+                radius = 4
+            
+            pygame.draw.circle(overlay, color, (int(target_x), int(target_y)), 
+                             radius=radius, width=0)
+            
+            # Draw margin circle for next waypoint
+            if waypoint_idx == 0:
+                target_margin_radius = (TARGET_DISTANCE_MARGIN * NM2KM / 
+                                      self.camera.zoom_km) * self.window_width
+                if target_margin_radius > 2:
+                    pygame.draw.circle(overlay, color, (int(target_x), int(target_y)), 
+                                     radius=int(target_margin_radius), width=2)
+        
+        canvas.blit(overlay, (0, 0))
+    
+    def _render_intruders(self, canvas, active_agent):
+        """Render intruder aircraft markers and collision information"""
+        if not active_agent:
+            return
+        
+        # Collect all intruders
+        all_intruder_ids = []
+        if hasattr(active_agent, 'intruder_collision_cache'):
+            all_intruder_ids = list(active_agent.intruder_collision_cache.keys())
+        selected_set = set(getattr(active_agent, 'selected_intruder_ids', []))
+        
+        # Render selected intruders (detailed info)
+        if hasattr(active_agent, 'selected_intruder_ids') and active_agent.selected_intruder_ids:
+            self._render_selected_intruders(canvas, active_agent)
+        
+        # Render non-selected intruders (simple markers)
+        self._render_other_intruders(canvas, active_agent, all_intruder_ids, selected_set)
+    
+    def _render_selected_intruders(self, canvas, active_agent):
+        """Render detailed information for selected intruders"""
+        font_obs = pygame.font.SysFont(None, 14)
+        cpa_font = pygame.font.SysFont(None, 16)
+        
+        for slot_idx, intruder_id in enumerate(active_agent.selected_intruder_ids):
+            if not hasattr(active_agent, 'intruder_state_map'):
+                continue
+            if intruder_id not in active_agent.intruder_state_map:
+                continue
+            
+            int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
+            int_x, int_y = self.camera.latlon_to_screen(
+                self.sim, int_lat, int_lon, self.window_width, self.window_height
+            )
+            
+            if int_x is None or int_y is None:
+                continue
+            if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
+                continue
+            
+            # Determine threat level and color
+            obs_color = (255, 165, 0, 255)  # Default: Orange
+            marker_size = 12
+            ring_width = 3
+            
+            if hasattr(active_agent, 'intruder_collision_cache') and \
+               intruder_id in active_agent.intruder_collision_cache:
+                collision_info = active_agent.intruder_collision_cache[intruder_id]
                 time_to_min_sep = collision_info.get('time_to_min_sep', 0)
-                min_separation = collision_info.get('min_separation', 999)
+                closing_rate = collision_info.get('closing_rate', 0)
+                min_separation = collision_info.get('min_separation', 100)
+                
                 is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
                 if is_real_threat:
-                    base_color = (255, 0, 0)
-                    marker_size = 11
-                elif collision_info.get('future_collision', False):
-                    base_color = (255, 165, 0)
-
-                pygame.draw.circle(canvas, base_color, (int(int_x), int(int_y)), marker_size, ring_width)
-                id_text = intruder_id[-3:]
-                txt = font_other.render(id_text, True, base_color)
-                canvas.blit(txt, (int(int_x) + marker_size + 2, int(int_y) - 6))
-
-        # (Removed NOOP slots box and NOOP action label per user request)
-
-        # Draw aircraft
+                    obs_color = (255, 0, 0, 255)  # Red for real conflicts
+                    marker_size = 14
+                    ring_width = 3
+            else:
+                collision_info = {}
+            
+            # Draw marker circle
+            pygame.draw.circle(canvas, obs_color, (int(int_x), int(int_y)), marker_size, ring_width)
+            
+            # Draw slot index
+            slot_text = f"[{slot_idx}]"
+            text_surface = font_obs.render(slot_text, True, obs_color[:3])
+            canvas.blit(text_surface, (int(int_x) + marker_size + 3, int(int_y) - 8))
+            
+            # Draw intruder ID
+            id_text = intruder_id[-3:]
+            text_surface = font_obs.render(id_text, True, obs_color[:3])
+            canvas.blit(text_surface, (int(int_x) + marker_size + 3, int(int_y) + 5))
+            
+            # Draw collision info
+            if collision_info:
+                time_to_min_sep = collision_info.get('time_to_min_sep', 0)
+                closing_rate = collision_info.get('closing_rate', 0)
+                min_separation = collision_info.get('min_separation', 100)
+                
+                logger.debug(f"[RENDER] Slot {slot_idx} ({intruder_id}): "
+                           f"min_sep={min_separation:.2f}NM, time={time_to_min_sep:.1f}s, "
+                           f"cr={closing_rate:+.2f}m/s")
+                
+                # Time to CPA
+                if time_to_min_sep < 0:
+                    time_text = f"t:PAST {time_to_min_sep:.0f}s"
+                elif time_to_min_sep >= 900:
+                    time_text = f"t:900s+"
+                else:
+                    time_text = f"t:{time_to_min_sep:.1f}s"
+                time_surface = cpa_font.render(time_text, True, obs_color[:3])
+                canvas.blit(time_surface, (int(int_x) + marker_size + 3, int(int_y) + 15))
+                
+                # Closing rate
+                cr_text = f"cr:{closing_rate:+.2f}m/s"
+                cr_surface = cpa_font.render(cr_text, True, obs_color[:3])
+                canvas.blit(cr_surface, (int(int_x) + marker_size + 3, int(int_y) + 30))
+                
+                # Minimum separation
+                min_sep_text = f"sep:{min_separation:.2f}NM"
+                min_sep_surface = cpa_font.render(min_sep_text, True, obs_color[:3])
+                canvas.blit(min_sep_surface, (int(int_x) + marker_size + 3, int(int_y) + 45))
+                
+                # Draw CPA position marker
+                self._render_cpa_marker(canvas, active_agent, intruder_id, 
+                                       time_to_min_sep, obs_color)
+    
+    def _render_cpa_marker(self, canvas, active_agent, intruder_id, time_to_min_sep, color):
+        """Render CPA (Closest Point of Approach) position marker"""
+        if time_to_min_sep <= 0 or time_to_min_sep >= LONG_CONFLICT_THRESHOLD_SEC:
+            return
+        
+        if not hasattr(active_agent, 'cpa_position_map') or \
+           intruder_id not in active_agent.cpa_position_map:
+            return
+        
+        cpa_lat, cpa_lon = active_agent.cpa_position_map[intruder_id]
+        if cpa_lat is None or cpa_lon is None:
+            return
+        
+        active_lat, active_lon, _, _ = self.sim.traf_get_state(active_agent.id)
+        active_x, active_y = self.camera.latlon_to_screen(
+            self.sim, active_lat, active_lon, self.window_width, self.window_height
+        )
+        cpa_x, cpa_y = self.camera.latlon_to_screen(
+            self.sim, cpa_lat, cpa_lon, self.window_width, self.window_height
+        )
+        
+        if cpa_x is None or cpa_y is None or active_x is None or active_y is None:
+            return
+        if not (0 <= cpa_x <= self.window_width and 0 <= cpa_y <= self.window_height):
+            return
+        
+        # Draw CPA marker and connecting line directly
+        cpa_point_color = (color[0], color[1], color[2])
+        pygame.draw.circle(canvas, cpa_point_color, (int(cpa_x), int(cpa_y)), 6, 2)
+        pygame.draw.line(canvas, cpa_point_color, 
+                        (int(active_x), int(active_y)), (int(cpa_x), int(cpa_y)), 1)
+    
+    def _render_other_intruders(self, canvas, active_agent, all_intruder_ids, selected_set):
+        """Render simple markers for non-selected intruders"""
+        font_other = pygame.font.SysFont(None, 12)
+        
+        for intruder_id in all_intruder_ids:
+            if intruder_id in selected_set:
+                continue
+            if not hasattr(active_agent, 'intruder_state_map'):
+                continue
+            if intruder_id not in active_agent.intruder_state_map:
+                continue
+            
+            int_lat, int_lon, int_hdg, int_tas = active_agent.intruder_state_map[intruder_id]
+            int_x, int_y = self.camera.latlon_to_screen(
+                self.sim, int_lat, int_lon, self.window_width, self.window_height
+            )
+            
+            if int_x is None or int_y is None:
+                continue
+            if not (0 <= int_x <= self.window_width and 0 <= int_y <= self.window_height):
+                continue
+            
+            # Determine color based on threat level
+            base_color = (140, 140, 140)
+            marker_size = 9
+            ring_width = 2
+            
+            collision_info = active_agent.intruder_collision_cache.get(intruder_id, {})
+            closing_rate = collision_info.get('closing_rate', 0)
+            time_to_min_sep = collision_info.get('time_to_min_sep', 0)
+            min_separation = collision_info.get('min_separation', 999)
+            
+            is_real_threat = self._is_actual_danger(closing_rate, time_to_min_sep, min_separation)
+            if is_real_threat:
+                base_color = (255, 0, 0)
+                marker_size = 11
+            elif collision_info.get('future_collision', False):
+                base_color = (255, 165, 0)
+            
+            # Draw marker directly
+            pygame.draw.circle(canvas, base_color, (int(int_x), int(int_y)), marker_size, ring_width)
+            
+            # Draw ID text
+            id_text = intruder_id[-3:]
+            txt = font_other.render(id_text, True, base_color)
+            canvas.blit(txt, (int(int_x) + marker_size + 2, int(int_y) - 6))
+    
+    def _render_aircraft(self, canvas, active_agent):
+        """Render aircraft symbols, headings, and CPA fan visualization"""
         for agent in self.all_agents.get_all_agents():
             lat, lon, hdg, tas = self.sim.traf_get_state(agent.id)
-            x_pos, y_pos = self.camera.latlon_to_screen(self.sim, lat, lon, self.window_width, self.window_height)
+            x_pos, y_pos = self.camera.latlon_to_screen(
+                self.sim, lat, lon, self.window_width, self.window_height
+            )
             
             if x_pos is None or y_pos is None:
                 continue
-            
             if not (0 <= x_pos <= self.window_width and 0 <= y_pos <= self.window_height):
                 continue
-
-            if agent == self.all_agents.get_active_agent():
-                color = (255,255,0)  # GELB für aktiven Agenten
-            else: 
-                color = (80,80,80)  # GRAU für passive Agenten
-
+            
+            # Determine color: Yellow for active agent, grey for others
+            is_active = agent == active_agent
+            color = (255, 255, 0, 255) if is_active else (80, 80, 80, 200)
+            
+            # Draw heading line
             line_length_km = 12 / NM2KM
             lat_end, lon_end = fn.get_point_at_distance(lat, lon, line_length_km, hdg)
-            heading_x, heading_y = self.camera.latlon_to_screen(self.sim, lat_end, lon_end, self.window_width, self.window_height)
-            pygame.draw.line(canvas, (0,0,0), (x_pos,y_pos), (heading_x,heading_y), 2)
+            heading_x, heading_y = self.camera.latlon_to_screen(
+                self.sim, lat_end, lon_end, self.window_width, self.window_height
+            )
+            pygame.draw.line(canvas, (0, 0, 0, 255), (x_pos, y_pos), 
+                           (heading_x, heading_y), 2)
             
-            # Multi-heading CPA visualization
-            if agent == self.all_agents.get_active_agent() and MULTI_CAP_HEADING_RENDER:
-                obs_dict = agent.obs_dict_cache if agent.obs_dict_cache is not None else self._get_observation_dict(agent)
-                multi_heading_cpa = obs_dict.get('multi_heading_cpa', None)
-                
-                if multi_heading_cpa is not None and len(multi_heading_cpa) == NUM_HEADING_OFFSETS:
-                    fan_radius_nm = 30.0
-                    fan_radius_km = fan_radius_nm * NM2KM
-                    fan_radius_px = (fan_radius_km / self.camera.zoom_km) * self.window_width
-                    
-                    segment_half_angle = 5.0
-                    fan_surface = pygame.Surface((self.window_width, self.window_height), pygame.SRCALPHA)
-                    
-                    for offset_idx in range(NUM_HEADING_OFFSETS):
-                        offset_deg = HEADING_OFFSETS[offset_idx]
-                        cpa_value = multi_heading_cpa[offset_idx]
-                        
-                        if cpa_value >= 0.8:
-                            r = int(255 * (1.0 - cpa_value) / 0.2)
-                            g = 255
-                            b = 0
-                        elif cpa_value >= 0.5:
-                            r = 255
-                            g = int(255 * (cpa_value - 0.5) / 0.3)
-                            b = 0
-                        else:
-                            r = 255
-                            g = 0
-                            b = 0
-                        
-                        segment_color = (r, g, b, 120)
-                        
-                        heading_with_offset = hdg + offset_deg
-                        angle_left = heading_with_offset - segment_half_angle
-                        angle_right = heading_with_offset + segment_half_angle
-                        
-                        lat_left, lon_left = fn.get_point_at_distance(lat, lon, fan_radius_km, angle_left)
-                        lat_right, lon_right = fn.get_point_at_distance(lat, lon, fan_radius_km, angle_right)
-                        
-                        x_left, y_left = self.camera.latlon_to_screen(self.sim, lat_left, lon_left, self.window_width, self.window_height)
-                        x_right, y_right = self.camera.latlon_to_screen(self.sim, lat_right, lon_right, self.window_width, self.window_height)
-                        
-                        if x_left is not None and y_left is not None and x_right is not None and y_right is not None:
-                            pygame.draw.polygon(fan_surface, segment_color, 
-                                              [(int(x_pos), int(y_pos)), 
-                                               (int(x_left), int(y_left)), 
-                                               (int(x_right), int(y_right))], 0)
-                            
-                            pygame.draw.line(fan_surface, (0, 0, 0, 80), (int(x_pos), int(y_pos)), (int(x_left), int(y_left)), 1)
-                            pygame.draw.line(fan_surface, (0, 0, 0, 80), (int(x_pos), int(y_pos)), (int(x_right), int(y_right)), 1)
-                            pygame.draw.line(fan_surface, (0, 0, 0, 80), (int(x_left), int(y_left)), (int(x_right), int(y_right)), 1)
-                    
-                    canvas.blit(fan_surface, (0, 0))
- 
-            dist_km = INTRUSION_DISTANCE * NM2KM / 2  
+            # Draw multi-heading CPA fan for active agent
+            if is_active and MULTI_CAP_HEADING_RENDER:
+                self._render_cpa_fan(canvas, agent, x_pos, y_pos, lat, lon, hdg)
+            
+            # Draw intrusion distance circle
+            dist_km = INTRUSION_DISTANCE * NM2KM / 2
             radius_px = (dist_km / self.camera.zoom_km) * self.window_width
             if radius_px > 1:
-                pygame.draw.circle(canvas, color, (int(x_pos), int(y_pos)), int(radius_px), 2)
-
+                pygame.draw.circle(canvas, color[:3], (int(x_pos), int(y_pos)), 
+                                 int(radius_px), 2)
+            
+            # Draw speed text
             font = pygame.font.SysFont(None, 20)
             tas_text = f"{tas:.0f}m/s"
             text_surface = font.render(tas_text, True, (0, 0, 0))
-            text_x = x_pos + radius_px + 5
-            text_y = y_pos - 10
-            canvas.blit(text_surface, (int(text_x), int(text_y)))
-
-            # (Reward box + separate noop point markers removed per user request)
-
-        # Time display
+            canvas.blit(text_surface, (int(x_pos + radius_px + 5), int(y_pos - 10)))
+    
+    def _render_cpa_fan(self, canvas, agent, x_pos, y_pos, lat, lon, hdg):
+        """Render multi-heading CPA visualization fan"""
+        obs_dict = agent.obs_dict_cache if agent.obs_dict_cache is not None else \
+                   self._get_observation_dict(agent)
+        multi_heading_cpa = obs_dict.get('multi_heading_cpa', None)
+        
+        if multi_heading_cpa is None or len(multi_heading_cpa) != NUM_HEADING_OFFSETS:
+            return
+        
+        fan_radius_nm = 30.0
+        fan_radius_km = fan_radius_nm * NM2KM
+        fan_radius_px = (fan_radius_km / self.camera.zoom_km) * self.window_width
+        segment_half_angle = 5.0
+        
+        fan_surface = pygame.Surface((self.window_width, self.window_height), pygame.SRCALPHA)
+        
+        for offset_idx in range(NUM_HEADING_OFFSETS):
+            offset_deg = HEADING_OFFSETS[offset_idx]
+            cpa_value = multi_heading_cpa[offset_idx]
+            
+            # Color gradient: Green (safe) -> Yellow -> Red (dangerous)
+            if cpa_value >= 0.8:
+                r = int(255 * (1.0 - cpa_value) / 0.2)
+                g = 255
+                b = 0
+            elif cpa_value >= 0.5:
+                r = 255
+                g = int(255 * (cpa_value - 0.5) / 0.3)
+                b = 0
+            else:
+                r = 255
+                g = 0
+                b = 0
+            
+            segment_color = (r, g, b, 120)
+            
+            # Calculate segment boundaries
+            heading_with_offset = hdg + offset_deg
+            angle_left = heading_with_offset - segment_half_angle
+            angle_right = heading_with_offset + segment_half_angle
+            
+            lat_left, lon_left = fn.get_point_at_distance(lat, lon, fan_radius_km, angle_left)
+            lat_right, lon_right = fn.get_point_at_distance(lat, lon, fan_radius_km, angle_right)
+            
+            x_left, y_left = self.camera.latlon_to_screen(
+                self.sim, lat_left, lon_left, self.window_width, self.window_height
+            )
+            x_right, y_right = self.camera.latlon_to_screen(
+                self.sim, lat_right, lon_right, self.window_width, self.window_height
+            )
+            
+            if x_left is None or y_left is None or x_right is None or y_right is None:
+                continue
+            
+            # Draw fan segment
+            pygame.draw.polygon(fan_surface, segment_color, 
+                              [(int(x_pos), int(y_pos)), 
+                               (int(x_left), int(y_left)), 
+                               (int(x_right), int(y_right))], 0)
+            
+            # Draw segment borders
+            pygame.draw.line(fan_surface, (0, 0, 0, 80), 
+                           (int(x_pos), int(y_pos)), (int(x_left), int(y_left)), 1)
+            pygame.draw.line(fan_surface, (0, 0, 0, 80), 
+                           (int(x_pos), int(y_pos)), (int(x_right), int(y_right)), 1)
+            pygame.draw.line(fan_surface, (0, 0, 0, 80), 
+                           (int(x_left), int(y_left)), (int(x_right), int(y_right)), 1)
+        
+        canvas.blit(fan_surface, (0, 0))
+    
+    def _render_ui_elements(self, canvas, active_agent):
+        """Render UI overlays: time, scale bar, debug info, pause overlay"""
+        # Simulation time
         sim_time = self.steps * AGENT_INTERACTION_TIME
         start_hour = 12
         current_hour = int(start_hour + sim_time // 3600)
         current_minute = int((sim_time % 3600) // 60)
         current_second = int(sim_time % 60)
         time_str = f"{current_hour:02d}:{current_minute:02d}:{current_second:02d}"
-
+        
         font = pygame.font.SysFont(None, 36)
         text_surface = font.render(time_str, True, (0, 0, 0))
         text_rect = text_surface.get_rect()
         text_rect.bottomright = (self.window_width - 20, self.window_height - 20)
         canvas.blit(text_surface, text_rect)
-
+        
         # Scale bar
+        self._render_scale_bar(canvas)
+        
+        # Debug information
+        self._render_debug_info(canvas, active_agent)
+        
+        # Pause overlay
+        if self.is_paused:
+            self._render_pause_overlay(canvas)
+    
+    def _render_scale_bar(self, canvas):
+        """Render 1 NM scale bar"""
         one_nm_km = 1.0
         one_nm_px = (one_nm_km / self.camera.zoom_km) * self.window_width
         
         legend_bottom = self.window_height - 50
         legend_left = 20
         
-        pygame.draw.line(canvas, (0, 0, 0), 
+        # Horizontal line
+        pygame.draw.line(canvas, (0, 0, 0, 255), 
                         (legend_left, legend_bottom), 
                         (legend_left + one_nm_px, legend_bottom), 
                         width=3)
         
-        pygame.draw.line(canvas, (0, 0, 0), 
+        # End markers
+        pygame.draw.line(canvas, (0, 0, 0, 255), 
                         (legend_left, legend_bottom - 5), 
                         (legend_left, legend_bottom + 5), 
                         width=2)
-        pygame.draw.line(canvas, (0, 0, 0), 
+        pygame.draw.line(canvas, (0, 0, 0, 255), 
                         (legend_left + one_nm_px, legend_bottom - 5), 
                         (legend_left + one_nm_px, legend_bottom + 5), 
                         width=2)
         
+        # Label
         legend_font_small = pygame.font.SysFont(None, 16)
         text_surface = legend_font_small.render("1 NM", True, (0, 0, 0))
         text_x = legend_left + (one_nm_px / 2) - (text_surface.get_width() / 2)
         text_y = legend_bottom + 10
         canvas.blit(text_surface, (text_x, text_y))
-
-
-        self._render_debug_info(canvas, active_agent)
-
-        # Pause overlay
-        if self.is_paused:
-            font_pause = pygame.font.SysFont(None, 48, bold=True)
-            pause_text = font_pause.render("PAUSED - Press SPACE to resume", True, (255, 0, 0))
-            text_rect = pause_text.get_rect(center=(self.window_width // 2, self.window_height // 2))
-            pygame.draw.rect(canvas, (255, 255, 255), text_rect.inflate(20, 20), border_radius=10)
-            canvas.blit(pause_text, text_rect)
-
-        self.window.blit(canvas, canvas.get_rect())
-        pygame.display.update()
-        self.clock.tick(self.metadata["render_fps"])
-
-        # Event handling
+    
+    def _render_pause_overlay(self, canvas):
+        """Render pause screen overlay"""
+        # Semi-transparent dark overlay (this one overlay is acceptable for rare pause state)
+        overlay = pygame.Surface(self.window_size, pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 100))
+        canvas.blit(overlay, (0, 0))
+        
+        font_pause = pygame.font.SysFont(None, 48, bold=True)
+        pause_text = font_pause.render("PAUSED - Press SPACE to resume", True, (255, 0, 0))
+        text_rect = pause_text.get_rect(center=(self.window_width // 2, self.window_height // 2))
+        
+        # Background box
+        pygame.draw.rect(canvas, (255, 255, 255), text_rect.inflate(20, 20), border_radius=10)
+        canvas.blit(pause_text, text_rect)
+    
+    def _handle_events(self):
+        """Handle pygame events (quit, pause)"""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.close()
@@ -965,6 +1245,7 @@ class BaseCrossingEnv:
                 if event.key == pygame.K_SPACE:
                     self.is_paused = not self.is_paused
         
+        # Pause loop
         while self.is_paused:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:

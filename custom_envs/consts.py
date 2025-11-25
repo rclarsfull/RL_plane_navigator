@@ -23,8 +23,8 @@ D_SPEED = 10  # m/s speed change per action (±10 m/s)
 SPEED_STABILITY_REWARD = 0.05  # Reward für nicht-ändern der Geschwindigkeit
 NOOP_REWARD = 0.2  # Flat reward for every NOOP action
 FLIGHT_LEVEL = 245
-MAX_SPEED = 254
-MIN_SPEED = 250
+MAX_SPEED = 150
+MIN_SPEED = 125
 
 
 DANGER_CLOSING_THRESHOLD = 0.0  # m/s: closing_rate < 0 = closing
