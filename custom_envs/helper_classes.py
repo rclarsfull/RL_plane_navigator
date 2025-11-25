@@ -25,6 +25,7 @@ class Agent:
     last_action: float = 0.0
     last_action_continuous: float = 0.0
     last_action_speed: int = 1  # 0=Beschleunigen, 1=Nichts, 2=Verlangsamen (Default: Nichts)
+    last_action_type: str = 'noop'  # 'noop' | 'steer' | 'snap'
     is_noop: bool = False
     counter_no_op: int = 0
     action_markers_with_steering: List[Tuple] = field(default_factory=list)
@@ -123,7 +124,6 @@ class Agent:
         self.heading_error = heading_error
 
         self.prev_drift = self.drift
-        self.action_age += 1
 
         # Gather all traffic from simulator
         all_lat, all_lon, all_hdg, all_tas, all_id = env.sim.traf_get_all()

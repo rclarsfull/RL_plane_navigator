@@ -20,6 +20,9 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.sb2_compat.rmsprop_tf_like import RMSpropTFLike  # noqa: F401
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecFrameStack, VecNormalize
 
+from sb3_plus import MultiOutputPPO
+from .masked_ppo import MaskedMultiOutputPPO
+
 # For custom activation fn
 from torch import nn as nn
 
@@ -37,6 +40,10 @@ ALGOS: dict[str, type[BaseAlgorithm]] = {
     "tqc": TQC,
     "trpo": TRPO,
     "ppo_lstm": RecurrentPPO,
+    # PLUS
+    "multioutputppo": MultiOutputPPO,
+    # Custom
+    "masked_ppo": MaskedMultiOutputPPO
 }
 
 

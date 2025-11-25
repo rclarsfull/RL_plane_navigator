@@ -1,0 +1,19 @@
+crossing_planes_multiHead:
+  policy: "MultiOutputPolicy"
+  n_timesteps: !!float 50e6
+  n_envs: 12                      
+  batch_size: 256             
+  n_steps: 512                  
+  n_epochs: 3                    
+  gamma: 0.96
+  frame_stack: 5
+  normalize: "dict(norm_obs=True, norm_reward=True)"
+  env_wrapper:
+    - stable_baselines3.common.monitor.Monitor
+  callback:
+    - "custom_envs.info_logger_callback.LogAllInfoCallback"
+  policy_kwargs: "dict(net_arch=dict(
+                          pi=[256, 256],  
+                          vf=[256, 256]    
+                        )
+                      )"
