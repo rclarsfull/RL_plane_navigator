@@ -6,7 +6,7 @@ crossing_planes_multiHead:
   n_steps: 512                  
   n_epochs: 3                    
   gamma: 0.96
-  frame_stack: 5
+  frame_stack: 4
   normalize: "dict(norm_obs=True, norm_reward=True)"
   env_wrapper:
     - stable_baselines3.common.monitor.Monitor
