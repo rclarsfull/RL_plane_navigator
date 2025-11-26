@@ -26,7 +26,7 @@ from collections import deque
 
 from .helper_classes import Waypoint, Agent, Agents
 from .consts import *
-from .helper_functions import bound_angle_positive_negative_180, get_point_at_distance
+from .helper_functions import bound_angle_positive_negative_180
 from .base_crossing_env import BaseCrossingEnv
 
 logger = logging.getLogger(__name__)

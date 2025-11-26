@@ -14,24 +14,20 @@ import random
 import time
 import numpy as np
 import pygame
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from collections import deque
+import numpy as np
+from numba import njit
+
 
 import bluesky_gym.envs.common.functions as fn
 
 from .helper_classes import Waypoint, Agent, Agents, Camera
 from .consts import *
-from .helper_functions import (
-    compute_cpa_multi_heading_numba,
-    bound_angle_positive_negative_180,
-    get_point_at_distance
-)
+from .helper_functions import bound_angle_positive_negative_180, get_point_at_distance, compute_cpa_multi_heading_numba
 from simulator.blue_sky_adapter import Simulator
 
 logger = logging.getLogger(__name__)
-
-
-
 
 class BaseCrossingEnv:
     """Base class with common methods for all crossing environments"""
@@ -63,7 +59,7 @@ class BaseCrossingEnv:
             self.clock = pygame.time.Clock()
         
         # Camera and trails
-        self.agent_trails = {}  # {agent_id: [(x,y,is_noop), ...]}
+        self.agent_trails = {}
         self.camera = Camera(center_lat=center_lat, center_lon=center_lon, zoom_km=667)
     
     # ==================== COLLISION DETECTION ====================
@@ -75,11 +71,11 @@ class BaseCrossingEnv:
         is_dangerous = min_separation < DANGER_MIN_SEP_THRESHOLD
         return is_closing & is_near_future & is_dangerous
     
+    
     def _calculate_collision_criticality_vectorized(
         self, agent_lat, agent_lon, agent_hdg, agent_tas,
         intruder_lats, intruder_lons, intruder_hdgs, intruder_tas_array
     ):
-        """Vectorized collision criticality calculation"""
         n_intruders = len(intruder_lats)
         
         if n_intruders == 0:
@@ -97,7 +93,6 @@ class BaseCrossingEnv:
             agent_hdg, agent_tas,
             intruder_hdgs, intruder_tas_array,
             bearings, distances,
-            INTRUSION_DISTANCE,
             np.array([0.0], dtype=np.float64)
         )
         
@@ -122,8 +117,7 @@ class BaseCrossingEnv:
         
         del bearings, distances, min_separation, t_to_cpa, closing_rate, is_colliding, flugbahnen_schneiden, future_collision
         return results
-    
-    # ==================== MULTI-HEADING CPA ====================
+
     
     def _compute_multi_heading_cpa_features(
         self, agent: Agent, ac_lat: float, ac_lon: float, ac_hdg: float, ac_tas: float
@@ -175,7 +169,6 @@ class BaseCrossingEnv:
             ac_hdg, ac_tas,
             intruder_hdgs, intruder_tas_array,
             bearings, distances,
-            INTRUSION_DISTANCE,
             offsets_combined
         )
 
@@ -196,8 +189,6 @@ class BaseCrossingEnv:
         
         del bearings, distances, min_seps, t_cpas, c_rates, is_critical, t_cpas_masked
         return multi_heading_cpa_features
-    
-    # ==================== INTRUDER SELECTION & FEATURES ====================
     
     def _compute_action_history(self, agent: Agent) -> np.ndarray:
         """Compute action history features for observation"""
@@ -336,6 +327,7 @@ class BaseCrossingEnv:
         vertical_separation_normalized = 1.0
         distance_to_waypoint_normalized = agent.distance_to_waypoint_normalized
         
+        # Features
         ego_state = np.array([
             ego_hdg_cos, ego_hdg_sin,
             speed_normalized,
@@ -343,14 +335,8 @@ class BaseCrossingEnv:
             vertical_separation_normalized,
             distance_to_waypoint_normalized
         ], dtype=np.float32)
-        
-        # Threat Features
         threat_features = self._compute_intruder_features(agent, ac_lat, ac_lon, ac_hdg, ac_tas)
-        
-        # Multi-Heading CPA
         multi_heading_cpa = self._compute_multi_heading_cpa_features(agent, ac_lat, ac_lon, ac_hdg, ac_tas)
-        
-        # Action History
         action_history = self._compute_action_history(agent)
         
         return {
@@ -1353,7 +1339,6 @@ class BaseCrossingEnv:
         text_surf = font_small.render(text, True, (0, 0, 0))
         canvas.blit(text_surf, (debug_x_right, debug_y_right))
 
-
     def render(self, mode="human"):
         """Render the environment"""
         self.render_mode = mode
@@ -1373,4 +1358,4 @@ class BaseCrossingEnv:
     def _set_action(self, action, agent: Agent) -> None:
         """Set the action for the agent (heading change)"""
         agent.action_age += 1
-        
+    
