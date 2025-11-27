@@ -122,28 +122,8 @@ class Cross_env(gym.Env, BaseCrossingEnv):
         return observations, infos
     
     def step(self, action):
-        if self.all_agents.is_active_agent_finished():
-            raise Exception("Active agent has already finished, this should not happen")
-
-        aktiv_agent = self.all_agents.get_active_agent()
-        self._set_action(action, aktiv_agent)
-
-        self.sim.sim_step(float(AGENT_INTERACTION_TIME))
-        
-        for agent in self.all_agents.get_all_agents():
-            agent.check_finish(self)
-            agent.update_observation_cache(self)
-            
-        aktiv_agent.check_intrusion(self)
-
-        done = self.all_agents.is_active_agent_finished() 
-        observation = self._get_observation() 
-        reward = self._get_reward()
-        info = self._get_info()
-        truncate = (self.steps >= self.step_limit) or self.total_intrusions > 0
-
-        self.steps += 1
-        return observation, reward, done, truncate, info
+        """Wrapper - uses base class implementation"""
+        return BaseCrossingEnv._step(self, action)
     
 
     def _compute_action_history_refactored(self, agent: Agent) -> np.ndarray:
@@ -182,98 +162,9 @@ class Cross_env(gym.Env, BaseCrossingEnv):
             'last_reward_total': float(last_reward_components.get('total', 0.0))
         }
 
-    def _get_reward(self):
-        agent = self.all_agents.get_active_agent()
-        
-        distance_to_waypoint = agent.distance_to_waypoint_normalized if agent.distance_to_waypoint_normalized != 0.0 else float(1e-6)
-        drift_normalized = agent.drift / np.pi  # [0, 1]
-        drift_reward = (1.0 - drift_normalized)**2 * DRIFT_FACTOR / (distance_to_waypoint/ 2.0)
-        if drift_normalized > 0.5:
-            drift_reward = -(drift_normalized)**2 * DRIFT_FACTOR / (distance_to_waypoint/ 2.0)
-        
-
-        collision_avoidance_reward = 0.0
-        
-        for slot_idx, intruder_id in enumerate(agent.selected_intruder_ids):
-            if intruder_id not in agent.intruder_collision_cache:
-                continue
-            
-            collision_info = agent.intruder_collision_cache[intruder_id]
-            min_separation = collision_info['min_separation']
-            closing_rate = collision_info['closing_rate']
-            time_to_min_sep = collision_info['time_to_min_sep']
-            
-
-            if not self._is_actual_danger(closing_rate, time_to_min_sep, min_separation):
-                continue
-            
-            if hasattr(agent, 'cpa_position_map') and intruder_id in agent.cpa_position_map:
-                cpa_lat, cpa_lon = agent.cpa_position_map[intruder_id]
-                
-                if cpa_lat is not None and cpa_lon is not None:
-                    ac_lat, ac_lon = agent.ac_lat, agent.ac_lon
-                    _, distance_to_cpa = self.sim.geo_calculate_direction_and_distance(
-                        ac_lat, ac_lon, cpa_lat, cpa_lon
-                    )
-                    
-                    distance_from_cpa_normalized = np.clip(distance_to_cpa / OBS_DISTANCE, 0.0, 1.0)
-                    time_urgency = np.clip(1.0 - (time_to_min_sep / LONG_CONFLICT_THRESHOLD_SEC), 0.0, 1.0)
-                    
-                    cpa_avoidance_reward = distance_from_cpa_normalized * time_urgency
-                    collision_avoidance_reward -= cpa_avoidance_reward * CPA_WARNING_FACTOR
-                    
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"[Step {self.steps}] CPA-BASED REWARD: {intruder_id} "
-                                   f"| time_to_sep={time_to_min_sep:.1f}s | dist_to_cpa={distance_to_cpa:.2f}NM "
-                                   f"| urgency={time_urgency:.2f} | reward={cpa_avoidance_reward:+.3f}")
-    
-        proximity_reward = 0.0
-
-        waypoint = self.getNextWaypoint(agent)
-        ac_lat, ac_lon = agent.ac_lat, agent.ac_lon
-        _, distance_to_waypoint = self.sim.geo_calculate_direction_and_distance(ac_lat, ac_lon, waypoint.lat, waypoint.lon)
-        
-        distance_normalized = np.clip(distance_to_waypoint / OBS_DISTANCE, 0.0, 1.0)
-        proximity_to_waypoint = 1.0 - distance_normalized  # [0, 1]: 1=ganz nah, 0=weit weg
-
-        waypoint_factor = 1.0 + float(agent.waypoints_collected)
-
-        proximity_reward = proximity_to_waypoint * PROXIMITY_REWARD_BASE * waypoint_factor
-        
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"[Step {self.steps}] PROXIMITY REWARD: "
-                        f"dist_to_wp={distance_to_waypoint:.2f}NM | proximity_norm={proximity_to_waypoint:.3f} | "
-                        f"waypoints_collected={agent.waypoints_collected} | factor={waypoint_factor:.1f} | "
-                        f"reward={proximity_reward:+.3f}")
-        
-            
-        waypoint_bonus = agent.waypoint_reached_this_step * WAYPOINT_BONUS
-
-        reward = (drift_reward + 
-                 collision_avoidance_reward +
-                 proximity_reward +
-                 waypoint_bonus)
-        
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"[Step {self.steps}] REWARDS: "
-                        f"Drift={drift_reward:+.3f} | "
-                        f"CPA-Avoidance={collision_avoidance_reward:+.3f} | "
-                        f"Proximity={proximity_reward:+.3f} | "
-                        f"TOTAL={reward:+.3f}")
-        
-
-        agent.last_reward_components = {
-            'drift': float(drift_reward),
-            'cpa_warning': float(collision_avoidance_reward),
-            'proximity': float(proximity_reward),
-            'total': float(reward)
-        }
-        
-        self.cumulative_drift_reward += drift_reward
-        self.cumulative_cpa_warning_reward += collision_avoidance_reward
-        self.cumulative_proximity_reward += proximity_reward
-        self.total_reward += reward
-        return reward
+    def _get_reward(self) -> float:
+        """Wrapper - uses base class implementation"""
+        return BaseCrossingEnv._get_reward(self)
 
     def _set_action(self, action, agent: Agent) -> None:
         BaseCrossingEnv._set_action(self, action, agent) 

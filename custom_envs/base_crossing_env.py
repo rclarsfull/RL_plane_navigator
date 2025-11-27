@@ -43,6 +43,10 @@ class BaseCrossingEnv:
         self.center_lon = center_lon
         self.all_agents: Optional[Agents] = None
         
+        # Parser cache - load once on initialization
+        self.parser_cache = None
+        self.parser_cache_path = None
+        
         # Rendering setup
         self.render_mode = render_mode
         self.window_width = window_width
@@ -61,6 +65,21 @@ class BaseCrossingEnv:
         # Camera and trails
         self.agent_trails = {}
         self.camera = Camera(center_lat=center_lat, center_lon=center_lon, zoom_km=667)
+    
+    def _load_parser_data(self, json_path: str):
+        """Load parser data once and cache it"""
+        if self.parser_cache is None or self.parser_cache_path != json_path:
+            logger.debug(f"Loading parser data from {json_path} (this happens only once)")
+            try:
+                from parser.parse_flightplans import parse_all_exercises
+                self.parser_cache = parse_all_exercises(json_path)
+                self.parser_cache_path = json_path
+                logger.debug(f"Cached {len(self.parser_cache)} exercises from {json_path}")
+            except Exception as e:
+                logger.error(f"Failed to load parser data: {e}")
+                self.parser_cache = None
+                raise
+        return self.parser_cache
     
     # ==================== COLLISION DETECTION ====================
     
@@ -346,6 +365,30 @@ class BaseCrossingEnv:
             'multi_heading_cpa': multi_heading_cpa
         }
     
+    def _step(self, action):
+        if self.all_agents.is_active_agent_finished():
+            raise Exception("Active agent has already finished, this should not happen")
+
+        aktiv_agent = self.all_agents.get_active_agent()
+        self._set_action(action, aktiv_agent)
+
+        self.sim.sim_step(float(AGENT_INTERACTION_TIME))
+        
+        for agent in self.all_agents.get_all_agents():
+            agent.check_finish(self)
+            agent.update_observation_cache(self)
+            
+        aktiv_agent.check_intrusion(self)
+
+        done = self.all_agents.is_active_agent_finished() 
+        observation = self._get_observation() 
+        reward = self._get_reward()
+        info = self._get_info()
+        truncate = (self.steps >= self.step_limit) or self.total_intrusions > 0
+
+        self.steps += 1
+        return observation, reward, done, truncate, info
+    
     def _get_observation(self, agent: Optional[Agent] = None) -> np.ndarray:
         """Get flat observation"""
         if agent is None:
@@ -361,6 +404,133 @@ class BaseCrossingEnv:
         ])
         return flat_obs
     
+    def _get_reward(self):
+        """
+        DENSE REWARD STRUCTURE - 6 KOMPONENTEN!
+        
+        Alle Komponenten geben Feedback basierend auf Agent-Verhalten:
+        
+        DENSE COMPONENTS (jeden Step):
+        1. drift_reward: [0, 0.6] (abhängig vom Heading Error zu Ziel) ← JEDEN STEP!
+        2. action_age_reward: [0, 0.1] (abhängig von NOOP-Dauer) ← JEDEN STEP (wenn NOOP)!
+        3. collision_avoidance_reward: [0, 0.5] (abhängig von Abstand zu CPA) ← NUR bei Gefahr!
+        4. proximity_reward: [0, ?] (abhängig von Nähe zum Waypoint + Anzahl gesammelter Waypoints) ← JEDEN STEP!
+        5. noop_reward: [NOOP_REWARD] (flache Belohnung für jede NOOP-Aktion) ← JEDEN STEP (wenn NOOP)!
+        
+        """
+        agent = self.all_agents.get_active_agent()
+        
+        distance_to_waypoint = agent.distance_to_waypoint_normalized if agent.distance_to_waypoint_normalized != 0.0 else float(1e-6)
+        drift_normalized = agent.drift / np.pi  # [0, 1]
+        drift_reward = (1.0 - drift_normalized)**2 * DRIFT_FACTOR / (distance_to_waypoint/ 2.0)
+        
+        action_age_reward = 0.0
+        if agent.is_noop:
+            action_age_seconds = agent.action_age * AGENT_INTERACTION_TIME
+            action_age_minutes = action_age_seconds / 60.0
+            action_age_normalized = np.clip(action_age_minutes / 15.0, 0.0, 1.0)
+            action_age_reward = action_age_normalized * ACTION_AGE_FACTOR
+        
+        collision_avoidance_reward = 0.0
+        obs_dict = agent.obs_dict_cache if agent.obs_dict_cache is not None else self._get_observation_dict(agent)
+        
+        for slot_idx, intruder_id in enumerate(agent.selected_intruder_ids):
+            if intruder_id not in agent.intruder_collision_cache:
+                continue
+            
+            collision_info = agent.intruder_collision_cache[intruder_id]
+            min_separation = collision_info['min_separation']
+            closing_rate = collision_info['closing_rate']
+            time_to_min_sep = collision_info['time_to_min_sep']
+            
+
+            if not self._is_actual_danger(closing_rate, time_to_min_sep, min_separation):
+                continue
+            
+            if hasattr(agent, 'cpa_position_map') and intruder_id in agent.cpa_position_map:
+                cpa_lat, cpa_lon = agent.cpa_position_map[intruder_id]
+                
+                if cpa_lat is not None and cpa_lon is not None:
+                    ac_lat, ac_lon = agent.ac_lat, agent.ac_lon
+                    _, distance_to_cpa = self.sim.geo_calculate_direction_and_distance(
+                        ac_lat, ac_lon, cpa_lat, cpa_lon
+                    )
+                    
+                    distance_from_cpa_normalized = np.clip(distance_to_cpa / OBS_DISTANCE, 0.0, 1.0)
+                    time_urgency = np.clip(1.0 - (time_to_min_sep / LONG_CONFLICT_THRESHOLD_SEC), 0.0, 1.0)
+                    
+                    cpa_avoidance_reward = distance_from_cpa_normalized * time_urgency
+                    collision_avoidance_reward -= cpa_avoidance_reward * CPA_WARNING_FACTOR
+                    
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"[Step {self.steps}] CPA-BASED REWARD: {intruder_id} "
+                                   f"| time_to_sep={time_to_min_sep:.1f}s | dist_to_cpa={distance_to_cpa:.2f}NM "
+                                   f"| urgency={time_urgency:.2f} | reward={cpa_avoidance_reward:+.3f}")
+    
+        proximity_reward = 0.0
+
+        waypoint = self.getNextWaypoint(agent)
+        ac_lat, ac_lon = agent.ac_lat, agent.ac_lon
+        _, distance_to_waypoint = self.sim.geo_calculate_direction_and_distance(ac_lat, ac_lon, waypoint.lat, waypoint.lon)
+        
+        distance_normalized = np.clip(distance_to_waypoint / OBS_DISTANCE, 0.0, 1.0)
+        proximity_to_waypoint = 1.0 - distance_normalized  # [0, 1]: 1=ganz nah, 0=weit weg
+
+        waypoint_factor = 1.0 + float(agent.waypoints_collected)
+
+        proximity_reward = proximity_to_waypoint * PROXIMITY_REWARD_BASE * waypoint_factor
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Step {self.steps}] PROXIMITY REWARD: "
+                        f"dist_to_wp={distance_to_waypoint:.2f}NM | proximity_norm={proximity_to_waypoint:.3f} | "
+                        f"waypoints_collected={agent.waypoints_collected} | factor={waypoint_factor:.1f} | "
+                        f"reward={proximity_reward:+.3f}")
+        
+        noop_reward = 0.0
+        if agent.is_noop:
+            noop_reward = NOOP_REWARD
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Step {self.steps}] NOOP REWARD: "
+                        f"is_noop={agent.is_noop} | "
+                        f"reward={noop_reward:+.3f}")
+            
+        waypoint_bonus = agent.waypoint_reached_this_step * WAYPOINT_BONUS
+
+        reward = (drift_reward + 
+                 action_age_reward +
+                 collision_avoidance_reward +
+                 proximity_reward +
+                 noop_reward +
+                 waypoint_bonus)
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[Step {self.steps}] REWARDS: "
+                        f"Drift={drift_reward:+.3f} | "
+                        f"ActionAge={action_age_reward:+.3f} | "
+                        f"CPA-Avoidance={collision_avoidance_reward:+.3f} | "
+                        f"Proximity={proximity_reward:+.3f} | "
+                        f"NOOP={noop_reward:+.3f} | "
+                        f"TOTAL={reward:+.3f}")
+        
+
+        agent.last_reward_components = {
+            'drift': float(drift_reward),
+            'action_age': float(action_age_reward),
+            'cpa_warning': float(collision_avoidance_reward),
+            'proximity': float(proximity_reward),
+            'noop': float(noop_reward),
+            'total': float(reward)
+        }
+        
+        self.cumulative_drift_reward += drift_reward
+        self.cumulative_action_age_reward += action_age_reward
+        self.cumulative_cpa_warning_reward += collision_avoidance_reward
+        self.cumulative_proximity_reward += proximity_reward
+        self.cumulative_noop_reward += noop_reward
+        self.total_reward += reward
+        return reward
+    
     # ==================== AIRCRAFT GENERATION ====================
     
     def _create_agents(self, n_agents, n_random_agents):
@@ -373,7 +543,7 @@ class BaseCrossingEnv:
     
     def _add_random_agents(self, routes_dict, center_lat, center_lon, n_agents, n_random_agents):
         """Helper to add random agents to the scenario"""
-        outer_ring_radius_nm = 250
+        outer_ring_radius_nm = 200
         outer_ring_radius_km = outer_ring_radius_nm * NM2KM
         
         for random_agent_idx in range(n_random_agents):
@@ -401,6 +571,38 @@ class BaseCrossingEnv:
                 'start_heading': random.uniform(0, 360),
                 'speed': random.uniform(MIN_SPEED, MAX_SPEED),
                 'ring_idx': -1
+            }
+        return routes_dict
+
+    def _add_random_agents_at_flight_level(self, routes_dict, center_lat, center_lon, n_agents, n_random_agents, flight_level):
+        """Helper to add random agents to the scenario at a specific flight level"""
+        outer_ring_radius_nm = 200
+        outer_ring_radius_km = outer_ring_radius_nm * NM2KM
+        
+        for random_agent_idx in range(n_random_agents):
+            agent_idx = n_agents + random_agent_idx
+            
+            offset_x_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+            offset_y_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+            start_lat = center_lat + (offset_x_km / 110.54)
+            start_lon = center_lon + (offset_y_km / 111.32)
+            
+            waypoints = deque()
+            
+            for i in range(5):
+                offset_x_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+                offset_y_km = random.uniform(-outer_ring_radius_km, outer_ring_radius_km)
+                wp_lat = center_lat + (offset_x_km / 110.54)
+                wp_lon = center_lon + (offset_y_km / 111.32)
+                waypoints.append(Waypoint(wp_lat, wp_lon))
+            
+            routes_dict[agent_idx] = {
+                'waypoints': waypoints,
+                'start_lat': start_lat,
+                'start_lon': start_lon,
+                'start_heading': random.uniform(0, 360),
+                'speed': random.uniform(MIN_SPEED, MAX_SPEED),
+                'altitude': flight_level
             }
         return routes_dict
 
@@ -486,8 +688,7 @@ class BaseCrossingEnv:
                 'start_lat': start_lat,
                 'start_lon': start_lon,
                 'start_heading': start_heading,
-                'speed': common_speed,
-                'ring_idx': assigned_ring
+                'speed': common_speed
             }
         
         return self._add_random_agents(routes_dict, center_lat, center_lon, n_agents, n_random_agents)
@@ -542,8 +743,7 @@ class BaseCrossingEnv:
                 'start_lat': start_lat,
                 'start_lon': start_lon,
                 'start_heading': start_heading,
-                'speed': common_speed,
-                'ring_idx': 0
+                'speed': common_speed
             }
             
         return self._add_random_agents(routes_dict, center_lat, center_lon, n_agents, n_random_agents)
@@ -610,17 +810,17 @@ class BaseCrossingEnv:
                 'start_lat': start_lat,
                 'start_lon': start_lon,
                 'start_heading': start_heading,
-                'speed': common_speed,
-                'ring_idx': 0
+                'speed': common_speed
             }
             
         return self._add_random_agents(routes_dict, center_lat, center_lon, n_agents, n_random_agents)
 
-    def _generate_mixed_scenario(self, center_lat, center_lon, n_agents, n_random_agents):
-        """Select one of the 3 scenarios based on probabilities"""
+    def _generate_mixed_scenario(self, center_lat, center_lon, n_agents, n_random_agents, 
+                                json_path: str = "parser/scenarios/ACS-exercises.json"):
+        """Select one of the 4 scenarios based on probabilities: 3 random + 1 parser"""
         scenario_type = random.choices(
-            ['crossing', 'merging', 'diverging'],
-            weights=[0.4, 0.3, 0.3], 
+            ['crossing', 'merging', 'diverging', 'parser'],
+            weights=[0.50, 0.10, 0.02, 0.05],  # Adjusted to include parser (28%)
             k=1
         )[0]
         
@@ -630,49 +830,188 @@ class BaseCrossingEnv:
             return self._generate_crossing_scenario(center_lat, center_lon, n_agents, n_random_agents)
         elif scenario_type == 'merging':
             return self._generate_merging_scenario(center_lat, center_lon, n_agents, n_random_agents)
-        else: # diverging
+        elif scenario_type == 'diverging':
             return self._generate_diverging_scenario(center_lat, center_lon, n_agents, n_random_agents)
+        else:  # parser
+            return self._generate_parser_scenario(
+                center_lat=center_lat,
+                center_lon=center_lon,
+                n_random_agents=n_random_agents,
+                json_path=json_path,
+                flight_level=None,
+                speed_override=None,
+                exercise_id=None
+            )
     
-    def _gen_aircraft(self, num_episodes: int):
-        """Generate aircraft with randomized distribution"""
-        n_agents = random.randint(2, 4)
-        n_random_agents = random.randint(5, 15)
+    def _generate_parser_scenario(self, center_lat, center_lon, n_random_agents=0, 
+                                  json_path: str = "parser/scenarios/ACS-exercises.json",
+                                  flight_level: Optional[int] = None,
+                                  speed_override: Optional[float] = None,
+                                  exercise_id: Optional[int] = None,
+                                  time_window_seconds: int = 3600):
+        """
+        Generate scenario by loading flight plans from parser/exercises.json
         
-        logger.debug(f"Episode #{num_episodes}: Spawning {n_agents} ring agents + {n_random_agents} random agents")
+        Args:
+            center_lat: Center latitude for scenario
+            center_lon: Center longitude for scenario
+            n_random_agents: Number of random intruder agents to add
+            json_path: Path to exercises.json file
+            flight_level: Optional altitude override (in hundreds of feet). 
+                         If None, a flight level from 2-3 quartile is selected
+            speed_override: Optional speed override (in m/s).
+                           If None, uses TAS from flightplan data
+            exercise_id: Optional specific Exercise ID. If None, a random exercise is selected
+            time_window_seconds: Duration of the time window to filter flightplans (default 3600 = 1 hour)
         
-        self.all_agents = self._create_agents(n_agents, n_random_agents)
+        Returns:
+            routes_dict with agent routes
+        """
+        routes_dict = {}
+        
+        # Load flightplan data for the exercise
+        logger.debug(f"Loading {'specific' if exercise_id else 'random'} exercise from {json_path}")
+        
+        try:
+            if exercise_id is not None:
+                from parser.parse_flightplans import get_specific_exercise
+                loaded_exercise_id, flightplans = get_specific_exercise(json_path, exercise_id)
+            else:
+                from parser.parse_flightplans import get_random_exercise
+                loaded_exercise_id, flightplans = get_random_exercise(json_path)
+        except Exception as e:
+            logger.error(f"Failed to load exercise: {e}")
+            raise
+        
+        if not flightplans:
+            logger.warning(f"No waypoints found for exercise {loaded_exercise_id}")
+            raise ValueError(f"No flightplans for exercise {loaded_exercise_id}")
+        
+        logger.debug(f"Loaded Exercise #{loaded_exercise_id} with {len(flightplans)} flightplans")
+        
+        # Filter flightplans by time window AND flight level
+        from parser.parse_flightplans import filter_flightplans_by_time_window_and_flight_level
+        flightplans, window_start, window_end, selected_flight_level = filter_flightplans_by_time_window_and_flight_level(
+            flightplans, 
+            window_duration_seconds=time_window_seconds,
+            target_flight_level=flight_level  # Use provided flight_level or select from quartile
+        )
+        
+        logger.debug(f"Filtered to {len(flightplans)} flightplans in time window ETO {window_start}-{window_end}s, Flight Level {selected_flight_level}")
+        
+        if not flightplans:
+            logger.warning(f"No flightplans in time window/flight level for exercise {loaded_exercise_id}")
+            raise ValueError(f"No flightplans in time window/flight level for exercise {loaded_exercise_id}")
+        
+        # Create agents from flightplan data
+        agent_idx = 0
+        for fp_id, fp_waypoints in flightplans.items():
+            if not fp_waypoints:
+                continue
+            
+            # fp_waypoints is a list of waypoint dicts
+            first_waypoint_data = fp_waypoints[0]
+            
+            # Get speed
+            speed = speed_override if speed_override is not None else first_waypoint_data.get('tas', MIN_SPEED)
+            # Convert TAS (in knots) to m/s if needed
+            if speed > 400:  # Assume it's in knots if too high
+                speed = speed * 0.51444  # knots to m/s
+            speed = np.clip(speed, MIN_SPEED, MAX_SPEED)
+            
+            # Use the selected flight level for all aircraft
+            altitude = selected_flight_level
+            
+            # Create waypoint queue from all waypoints
+            wp_queue = deque()
+            for wp_data in fp_waypoints:
+                wp_queue.append(Waypoint(wp_data['lat'], wp_data['lon']))
+            
+            # Get first waypoint for start position
+            first_wp = wp_queue[0]
+            
+            # Calculate heading from first to second waypoint
+            start_heading = 0.0
+            if len(wp_queue) > 1:
+                second_wp = wp_queue[1]
+                start_heading, _ = self.sim.geo_calculate_direction_and_distance(
+                    first_wp.lat, first_wp.lon, second_wp.lat, second_wp.lon
+                )
+            
+            aircraft_type = first_waypoint_data.get('aircraft_type', 'A320')
+            
+            routes_dict[agent_idx] = {
+                'waypoints': wp_queue,
+                'start_lat': first_wp.lat,
+                'start_lon': first_wp.lon,
+                'start_heading': start_heading,
+                'speed': speed,
+                'ring_idx': 0,
+                'altitude': altitude,
+                'flightplan_id': fp_id,
+                'aircraft_type': aircraft_type,
+                'eto_start': first_waypoint_data.get('eto', 0)
+            }
+            
+            logger.debug(f"Agent {agent_idx}: FP#{fp_id}, Speed={speed:.1f}m/s, Alt={altitude}, Aircraft={aircraft_type}, ETO={first_waypoint_data.get('eto', 0)}")
+            agent_idx += 1
+        
+        n_agents = agent_idx
+        
+        # Add random intruders if requested (also on same flight level)
+        if n_random_agents > 0:
+            routes_dict = self._add_random_agents_at_flight_level(
+                routes_dict, center_lat, center_lon, n_agents, n_random_agents, selected_flight_level
+            )
+        
+        logger.debug(f"Parser scenario: Exercise#{loaded_exercise_id}, {n_agents} planned agents + {n_random_agents} random agents, Flight Level {selected_flight_level}")
+        return routes_dict
+    
+    def _gen_aircraft(self, num_episodes: int,
+                      parser_path: str = "parser/scenarios/ACS-exercises.json"):
+        """
+        Generate aircraft for the episode.
+        Configuration of agent counts happens here.
+        
+        Args:
+            num_episodes: Episode number for logging
+            parser_path: Path to exercises.json for parser scenario
+        """
+        # Configure scenario parameters here
+        n_agents = random.randint(2, 4)          # Planned agents per episode
+        n_random_agents = random.randint(1, 3)   # Random intruder agents
+        
+        logger.debug(f"Episode #{num_episodes}: Spawning {n_agents} planned agents + {n_random_agents} random agents")
+        
+        # Generate scenario (may be crossing, merging, diverging, or parser)
         
         routes_data = self._generate_mixed_scenario(
             center_lat=self.center_lat,
             center_lon=self.center_lon,
             n_agents=n_agents,
-            n_random_agents=n_random_agents
+            n_random_agents=n_random_agents,
+            json_path=parser_path
         )
+
         
-        spawn_positions = []
+        # Count actual agents in routes_data
+        actual_n_agents = len(routes_data)
         
-        for agent_idx, agent in enumerate(self.all_agents.get_all_agents()):
-            route_info = routes_data[agent_idx]
+        # Create agents for this scenario
+        self.all_agents = self._create_agents(actual_n_agents, 0)
+        
+        # Shuffle agents for random assignment
+        all_agents_list = self.all_agents.get_all_agents()
+        random.shuffle(all_agents_list)
+        
+        for i in range(len(all_agents_list)):
+            agent = all_agents_list[i]
+            route_info = routes_data[i]
             agent.waypoint_queue = route_info['waypoints']
-            
             start_lat = route_info['start_lat']
             start_lon = route_info['start_lon']
             start_heading = route_info['start_heading']
             speed = route_info['speed']
-            
-            for other_lat, other_lon in spawn_positions:
-                _, dist_nm = self.sim.geo_calculate_direction_and_distance(
-                    start_lat, start_lon, other_lat, other_lon
-                )
-                if dist_nm < SPAWN_SEPARATION_MIN:
-                    offset_dist = random.uniform(0.5, 2.0)
-                    offset_angle = random.uniform(0, 360)
-                    start_lat, start_lon = get_point_at_distance(
-                        start_lat, start_lon, offset_dist, offset_angle
-                    )
-                    break
-            
-            spawn_positions.append((start_lat, start_lon))
             
             self.sim.traf_create(
                 agent.id,
@@ -687,7 +1026,6 @@ class BaseCrossingEnv:
             if agent != self.all_agents.get_active_agent():
                 for waypoint in agent.waypoint_queue:
                     self.sim.traf_add_waypoint(agent.id, waypoint.lat, waypoint.lon, FLIGHT_LEVEL)
-                self.sim.traf_activate_lnav(agent.id)
         
         self.sim.sim_step(float(0.1))
     

@@ -15,40 +15,93 @@ from sb3_plus.mimo.on_policy_algorithm import MultiOutputOnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, Schedule
 from stable_baselines3.common.utils import get_schedule_fn, explained_variance
-#class MaskedMultiOutputDistribution(MultiOutputDistribution):
-#    """
-#    Custom Distribution that masks the log_prob of the steering head
-#    when the action_type is not steering (index 2).
-#    """
-#    def log_prob(self, actions: th.Tensor) -> th.Tensor:
-#        # Split actions into components
-#        split_actions = th.split(actions, self.action_dims, dim=1)
-#        
-#        # Calculate log_prob for each component
-#        list_log_prob = [dist.log_prob(action) for dist, action in zip(self.distribution, split_actions)]
-#        
-#        # We assume the action space structure:
-#        # Index 0: action_type (Discrete)
-#        # Index 1: steer (Box)
-#        assert len(list_log_prob) == 2, "Expected exactly two action components"
-#        
-#        if len(list_log_prob) >= 2:
-#            # action_type is at index 0
-#            action_type_val = split_actions[0]
-#            
-#            # Create mask: 1.0 if action_type == 2 (STEER), 0.0 otherwise
-#            # action_type_val might be float, cast to long
-#            # squeeze() is needed because action_type_val has shape (batch_size, 1)
-#            is_steer = (action_type_val.long() == 2).float().squeeze(-1)
-#            
-#            # Apply mask to steer log_prob (index 1)
-#            # list_log_prob[1] has shape (batch_size,)
-#            list_log_prob[1] = list_log_prob[1] * is_steer
-#            
-#        log_prob = th.stack(list_log_prob, dim=1)
-#        log_prob = log_prob.sum(dim=1)
-#        return log_prob
 
+STEER_INDEX = 2  # Index of the STEER action in the action_type discrete distribution
+
+class MaskedMultiOutputDistribution(MultiOutputDistribution):
+    """
+    Custom Distribution that masks the log_prob of the steering head
+    when the action_type is not steering (index 2).
+    """
+    def log_prob(self, actions: th.Tensor) -> th.Tensor:
+        # Split actions into components
+        split_actions = th.split(actions, self.action_dims, dim=1)
+
+        # Calculate log_prob for each component
+        list_log_prob = [dist.log_prob(action) for dist, action in zip(self.distribution, split_actions)]
+
+        # We assume the action space structure:
+        # Index 0: action_type (Discrete)
+        # Index 1: steer (Box)
+        assert len(list_log_prob) == 2, "Expected exactly two action components"
+
+        if len(list_log_prob) >= 2:
+            # action_type is at index 0
+            action_type_val = split_actions[0]
+
+            # Create mask: 1.0 if action_type == 2 (STEER), 0.0 otherwise
+            # action_type_val might be float, cast to long
+            # squeeze() is needed because action_type_val has shape (batch_size, 1)
+            is_steer = (action_type_val.long() == STEER_INDEX).float().squeeze(-1)
+
+            # Apply mask to steer log_prob (index 1)
+            # list_log_prob[1] has shape (batch_size,)
+            list_log_prob[1] = list_log_prob[1] * is_steer
+
+        log_prob = th.stack(list_log_prob, dim=1)
+        log_prob = log_prob.sum(dim=1)
+        return log_prob
+
+    def sample(self) -> th.Tensor:
+        """Autoregressive sampling: sample action_type first, then steer only when needed.
+
+        Returns
+        -------
+        actions : th.Tensor
+            Concatenated actions along dim=1, first column is action_type (int-like),
+            remaining columns are steer (possibly multi-dim). For non-steer cases steer is 0.
+        """
+        # Sample action_type
+        a_type = self.distribution[0].sample()
+        if a_type.dim() == 1:
+            a_type = a_type.unsqueeze(1)
+
+        # Sample steer
+        steer = self.distribution[1].sample()
+        # Ensure steer has shape (batch, D)
+        if steer.dim() == 1:
+            steer = steer.unsqueeze(1)
+
+        # Create mask: keep steer only when action_type == 2
+        is_steer = (a_type.long().squeeze(-1) == STEER_INDEX).float().unsqueeze(1)
+        steer = steer * is_steer
+
+        return th.cat([a_type, steer], dim=1)
+
+    def entropy(self) -> Optional[th.Tensor]:
+        ent0 = self.distribution[0].entropy()
+        ent1 = self.distribution[1].entropy()
+        if ent0 is None or ent1 is None:
+            return None
+
+        # Versuche logits aus der torch.distributions.Categorical zu lesen
+        dist0 = self.distribution[0]
+        p_steer = None
+
+        # FlattenCategoricalDistribution hat ein torch.distributions.Categorical-Objekt
+        if hasattr(dist0, 'distribution') and hasattr(dist0.distribution, 'logits'):
+            logits = dist0.distribution.logits
+            p_steer = th.exp(F.log_softmax(logits, dim=-1))[..., STEER_INDEX]
+
+        assert p_steer is not None
+
+        if ent1.dim() > p_steer.dim():
+            p_steer = p_steer.unsqueeze(-1)
+
+        return ent0 + ent1 * p_steer
+
+
+       
 #class MaskedMultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
 #    def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
 #        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
@@ -73,23 +126,40 @@ from stable_baselines3.common.utils import get_schedule_fn, explained_variance
 #        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
 class MaskedMultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
-    def forward_actor(self, obs: th.Tensor):
-        latent_pi = self._get_latent_pi(obs)
+    def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
+        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
 
+        # Replace distribution with our custom masked distribution
+        self.action_dist = MaskedMultiOutputDistribution(self.action_space)
+
+        # Rebuild the action net to match the new distribution
+        # (Though for MultiOutputDistribution it should be the same structure)
+        latent_dim_pi = self.mlp_extractor.latent_dim_pi
+        self.action_net, self.log_std = self.action_dist.proba_distribution_net(
+            latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+        )
+
+        # Re-initialize weights for the new action_net
+        if self.ortho_init:
+             module_gains = {self.action_net: 0.01}
+             for module, gain in module_gains.items():
+                module.apply(partial(self.init_weights, gain=gain))
+
+        # Re-initialize the optimizer to include the new parameters
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+
+    #def forward_actor(self, obs: th.Tensor): Wie in: https://arxiv.org/pdf/2006.14171 Geht aber nicht bei mir weil ich nicht abhänig von dem env state maskiere sondern abhänig von der action
+    #    latent_pi = self._get_latent_pi(obs)
         # Original logits
-        logits = self.action_net(latent_pi)
-
-        action_type_logits = logits[0]
-        steer_logits = logits[1]
-
-        # action_type predicted logits → get argmax
-        action_type = th.argmax(action_type_logits, dim=1)
-
-        # Mask steer logits if action_type != 2
-        mask = (action_type == 2).float().unsqueeze(1)
-        steer_logits = steer_logits + (1 - mask) * -1e8
-
-        return (action_type_logits, steer_logits)
+    #    logits = self.action_net(latent_pi)
+    #    action_type_logits = logits[0]
+    #    steer_logits = logits[1]
+    #    action_type predicted logits → get argmax
+    #    action_type = th.argmax(action_type_logits, dim=1) Das ist problematisch das dadurch zu früh angenommen wird das es die steer aktion ist
+    #    Mask steer logits if action_type != 2
+    #    mask = (action_type == 2).float().unsqueeze(1)
+    #    steer_logits = steer_logits + (1 - mask) * -1e8
+    #    return (action_type_logits, steer_logits)
     
 class MaskedMultiOutputPPO(MultiOutputPPO):
     def __init__(

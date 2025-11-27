@@ -1,22 +1,17 @@
 crossing_planes:
   policy: "MlpPolicy"
-  n_timesteps: !!float 0.4e6
-  n_envs: 12                      
-  batch_size: 256             
-  n_steps: 512                  
-  n_epochs: 3                    
+  n_timesteps: !!float 2e6
+  n_envs: 6                                      
   gamma: 0.96
-  frame_stack: 5
   normalize: "dict(norm_obs=True, norm_reward=True)"
+  normalize_advantage: true
   env_wrapper:
     - stable_baselines3.common.monitor.Monitor
   callback:
     - "custom_envs.info_logger_callback.LogAllInfoCallback"
-  policy_kwargs: "dict(net_arch=dict(
-                          pi=[256, 256],  
-                          vf=[256, 256]    
-                        )
-                      )"
+  policy_kwargs: "dict(
+                    net_arch=dict(pi=[128, 128], vf=[128, 128])
+                  )"
 
 crossing_planes_conti:
   policy: "MlpPolicy"
