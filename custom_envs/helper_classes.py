@@ -57,9 +57,9 @@ class Agent:
     sin_drift: float = 0.0
     
     # Normalized features (cached from _update_observation_cache)
-    speed_normalized: float = 0.0
-    drift_normalized: float = 0.0
-    distance_to_waypoint_normalized: float = 0.0
+    speed: float = 0.0
+    drift: float = 0.0
+    distance_to_waypoint: float = 0.0
     
     # Observation caching
     obs_dict_cache: Optional[Dict[str, np.ndarray]] = None
@@ -114,10 +114,9 @@ class Agent:
         self.cos_drift = np.cos(drift_rad)
         self.sin_drift = np.sin(drift_rad)
         self.distanceTarget = target_dist
-        self.distance_to_waypoint_normalized = np.clip(target_dist / 100.0, 0.0, 1.0)
+        self.distance_to_waypoint = target_dist
         self.drift = abs(drift_rad)
-        self.drift_normalized = np.clip(self.drift / np.pi, 0.0, 1.0)
-        self.speed_normalized = np.clip((ac_tas - MIN_SPEED) / (MAX_SPEED - MIN_SPEED), 0.0, 1.0)
+        self.speed = ac_tas
 
         heading_error = ac_hdg - self.last_set_heading
         heading_error = fn.bound_angle_positive_negative_180(heading_error)
@@ -238,6 +237,7 @@ class Agent:
 
         intrusion_mask = distances < INTRUSION_DISTANCE
         num_intrusions = int(np.sum(intrusion_mask))
+        self.intrusions_caused_by_last_action = num_intrusions
 
         if num_intrusions > 0:
             env.total_intrusions += num_intrusions

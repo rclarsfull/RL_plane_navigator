@@ -67,26 +67,6 @@ class Cross_env(gym.Env):
         self.total_action_magnitude = 0.0  # Summe aller |action| Werte
         self.total_steer_action_magnitude = 0.0  # Summe nur für Steer-Aktionen
         self.total_action_age = 0.0  # Kumulative Action Age über Episode
-        
-        self.cumulative_drift_reward = 0.0
-        self.cumulative_intrusion_reward = 0.0
-        self.cumulative_action_age_reward = 0.0
-        self.cumulative_action_penalty = 0.0
-        self.cumulative_cpa_warning_reward = 0.0
-        self.cumulative_waypoint_bonus = 0.0
-        self.cumulative_proximity_reward = 0.0
-
-
-        # Observation Space Breakdown:
-        # ego_state: 6 (heading_cos, heading_sin, speed, drift, v_sep, dist_to_wp)
-        # threat_features: NUM_AC_STATE * 8 = 4 * 8 = 32
-        # action_history: 7 (last_action_heading, action_continuous, action_age, turning_rate, last_target_heading_cos, last_target_heading_sin, target_heading_normalized)
-        # multi_heading_cpa: NUM_HEADING_OFFSETS (min time_to_cpa for each heading offset) = 9
-        # Total: 6 + 32 + 7 + 9 = 54
-        obs_dim = 6 + NUM_AC_STATE * 8 + 7 + NUM_HEADING_OFFSETS
-        self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
-        )
 
         # Continuous Action Space: [target_heading_change]
         # target_heading_change: [-1, 1] → [-D_HEADING, +D_HEADING]
@@ -449,8 +429,6 @@ class Cross_env(gym.Env):
     def step(self, action):
         if self.all_agents.is_active_agent_finished():
             raise Exception("Active agent has already finished, this should not happen")
-
-
         
         aktiv_agent = self.all_agents.get_active_agent()
         self._set_action(action, aktiv_agent)
@@ -949,17 +927,14 @@ class Cross_env(gym.Env):
         ego_hdg_cos = np.cos(ac_hdg_rad)
         ego_hdg_sin = np.sin(ac_hdg_rad)
         
-        speed_normalized = agent.speed_normalized
-        drift_normalized = agent.drift_normalized
-        vertical_separation_normalized = 1.0
-        distance_to_waypoint_normalized = agent.distance_to_waypoint_normalized
+        vertical_separation = 1.0
         
         ego_state = np.array([
             ego_hdg_cos, ego_hdg_sin,
-            speed_normalized,
-            drift_normalized,
-            vertical_separation_normalized,
-            distance_to_waypoint_normalized
+            agent.speed,
+            agent.drift,
+            vertical_separation,
+            agent.distance_to_waypoint 
         ], dtype=np.float32)
         
         # ===== THREAT FEATURES (aktueller Heading) =====
@@ -993,55 +968,6 @@ class Cross_env(gym.Env):
         ])
         return flat_obs
 
-    
-    def _get_info(self):
-        active_agent = self.all_agents.get_active_agent()
-
-        # Durchschnittliche Action Age über gesamte Episode
-        avg_action_age = self.total_action_age / self.steps if self.steps > 0 else 0
-        avg_action_age_seconds = avg_action_age * AGENT_INTERACTION_TIME
-        
-        # Berechne durchschnittliche Aktionsgrößen
-        avg_action_magnitude = self.total_action_magnitude / self.steps if self.steps > 0 else 0
-        avg_steer_magnitude = self.total_steer_action_magnitude / self.actions_steer_count if self.actions_steer_count > 0 else 0
-        
-        last_reward_components = active_agent.last_reward_components if active_agent.last_reward_components else {}
-        
-        return {
-            'avg_reward': float(self.total_reward/self.steps if self.steps > 0 else 0),
-            'intrusions': self.total_intrusions,
-            'drift_active_agent': float(active_agent.drift * 180 / np.pi),
-            'agent_finished': bool(self.all_agents.is_active_agent_finished()),
-            'is_success': bool(self.all_agents.is_active_agent_finished() and self.total_intrusions == 0),
-            'steps': int(self.steps),
-            'waypoints_collected': int(active_agent.waypoints_collected),
-            'actions_noop': int(self.actions_noop_count),
-            'actions_steer': int(self.actions_steer_count),
-            'last_continuous_action': float(self.last_continuous_action),
-            'num_episodes': int(self.num_episodes),
-            'cumulative_drift_reward': float(self.cumulative_drift_reward),
-            'cumulative_action_age_reward': float(self.cumulative_action_age_reward),
-            'cumulative_action_penalty': float(self.cumulative_action_penalty),
-            'cumulative_cpa_warning_reward': float(self.cumulative_cpa_warning_reward),
-            'cumulative_waypoint_bonus': float(self.cumulative_waypoint_bonus),
-            'cumulative_proximity_reward': float(self.cumulative_proximity_reward),
-            'avg_action_age': float(avg_action_age),
-            'avg_action_age_seconds': float(avg_action_age_seconds),
-            'total_cumulative_reward': float(self.cumulative_drift_reward + self.cumulative_intrusion_reward + 
-                                              self.cumulative_action_age_reward + self.cumulative_action_penalty +
-                                              self.cumulative_cpa_warning_reward +
-                                              self.cumulative_waypoint_bonus +
-                                              self.cumulative_proximity_reward),
-
-            'last_reward_drift': float(last_reward_components.get('drift', 0.0)),
-            'last_reward_action_age': float(last_reward_components.get('action_age', 0.0)),
-            'last_reward_action_penalty': float(last_reward_components.get('action_penalty', 0.0)),
-            'last_reward_cpa_warning': float(last_reward_components.get('cpa_warning', 0.0)),
-            'last_reward_proximity': float(last_reward_components.get('proximity', 0.0)),
-            'last_reward_total': float(last_reward_components.get('total', 0.0)),
-            'avg_action_magnitude': float(avg_action_magnitude),
-            'avg_steer_magnitude': float(avg_steer_magnitude)
-        }
 
     def _get_reward(self) -> float:
         """Wrapper - uses base class implementation"""

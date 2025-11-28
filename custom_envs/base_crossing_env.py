@@ -14,6 +14,7 @@ import random
 import time
 import numpy as np
 import pygame
+import gymnasium as gym
 from typing import Dict, List, Optional, Tuple
 from collections import deque
 import numpy as np
@@ -28,6 +29,106 @@ from .helper_functions import bound_angle_positive_negative_180, get_point_at_di
 from simulator.blue_sky_adapter import Simulator
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== NUMBA OPTIMIZED FUNCTIONS ====================
+
+@njit
+def compute_nearby_agents_ego_states_numba(
+    other_hdgs: np.ndarray,
+    other_speeds: np.ndarray,
+    other_drifts: np.ndarray,
+    other_dist_to_wp: np.ndarray,
+    other_lats: np.ndarray,
+    other_lons: np.ndarray,
+    other_tas_values: np.ndarray,
+    ac_lat: float,
+    ac_lon: float,
+    ac_hdg: float,
+    ac_tas: float,
+    obs_distance: float,
+    max_speed: float,
+    n_agents_to_return: int = 4
+) -> np.ndarray:
+    """
+    Vectorized Numba computation of nearby agents ego states.
+    
+    Args:
+        other_hdgs: Array of headings in degrees
+        other_speeds: Array of normalized speeds
+        other_drifts: Array of normalized drifts
+        other_dist_to_wp: Array of normalized distances to waypoint
+        other_lats: Array of latitudes
+        other_lons: Array of longitudes
+        other_tas_values: Array of true air speeds in m/s
+        ac_lat, ac_lon: Main agent position
+        ac_hdg: Main agent heading in degrees
+        ac_tas: Main agent true air speed
+        obs_distance: Observation distance for normalization
+        max_speed: Maximum speed for normalization
+        n_agents_to_return: Number of agents to return (default 4)
+    
+    Returns:
+        Array of shape (n_agents_to_return, 10) with ego states
+    """
+    n_others = len(other_hdgs)
+    
+    # Initialize output with filler slots
+    output = np.zeros((n_agents_to_return, 10), dtype=np.float32)
+    for i in range(n_agents_to_return):
+        output[i] = np.array([1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    
+    if n_others == 0:
+        return output
+    
+    # Compute own velocity components (once)
+    own_hdg_rad = np.deg2rad(float(ac_hdg))
+    own_vel_x = float(ac_tas) * np.sin(own_hdg_rad)
+    own_vel_y = float(ac_tas) * np.cos(own_hdg_rad)
+    
+    # Compute distances and relative positions for all agents (vectorized)
+    distances = np.zeros(n_others, dtype=np.float64)
+    rel_lats = np.zeros(n_others, dtype=np.float64)
+    rel_lons = np.zeros(n_others, dtype=np.float64)
+    
+    for i in range(n_others):
+        rel_lat = other_lats[i] - float(ac_lat)
+        rel_lon = other_lons[i] - float(ac_lon)
+        rel_lats[i] = rel_lat
+        rel_lons[i] = rel_lon
+        distances[i] = np.sqrt(rel_lat * rel_lat + rel_lon * rel_lon)
+    
+    # Find indices of 4 nearest agents
+    nearest_indices = np.argsort(distances)[:min(n_agents_to_return, n_others)]
+    
+    # Extract and compute features for nearest agents
+    for out_idx in range(len(nearest_indices)):
+        agent_idx = int(nearest_indices[out_idx])
+        
+        # Heading features
+        other_hdg_rad = np.deg2rad(float(other_hdgs[agent_idx]))
+        hdg_cos = float(np.cos(other_hdg_rad))
+        hdg_sin = float(np.sin(other_hdg_rad))
+        
+        # Relative velocity components
+        other_vel_x = float(other_tas_values[agent_idx]) * np.sin(other_hdg_rad)
+        other_vel_y = float(other_tas_values[agent_idx]) * np.cos(other_hdg_rad)
+        rel_vel_x = other_vel_x - own_vel_x
+        rel_vel_y = other_vel_y - own_vel_y
+        
+        # No normalization/clipping here, just raw values
+        output[out_idx, 0] = np.float32(hdg_cos)
+        output[out_idx, 1] = np.float32(hdg_sin)
+        output[out_idx, 2] = np.float32(other_speeds[agent_idx])
+        output[out_idx, 3] = np.float32(other_drifts[agent_idx])
+        output[out_idx, 4] = np.float32(1.0)  # vertical_separation_normalized
+        output[out_idx, 5] = np.float32(other_dist_to_wp[agent_idx])
+        output[out_idx, 6] = np.float32(rel_lats[agent_idx])
+        output[out_idx, 7] = np.float32(rel_lons[agent_idx])
+        output[out_idx, 8] = np.float32(rel_vel_x)
+        output[out_idx, 9] = np.float32(rel_vel_y)
+    
+    return output
 
 class BaseCrossingEnv:
     """Base class with common methods for all crossing environments"""
@@ -56,6 +157,15 @@ class BaseCrossingEnv:
         self.clock = None
         self.is_paused = False
         
+        self.cumulative_drift_reward = 0.0
+        self.cumulative_intrusion_reward = 0.0
+        self.cumulative_action_age_reward = 0.0
+        self.cumulative_cpa_warning_reward = 0.0
+        self.cumulative_waypoint_bonus = 0.0
+        self.cumulative_noop_reward = 0.0
+        self.cumulative_collision_penalty = 0.0
+
+        
         if self.render_mode == "human":
             pygame.init()
             pygame.display.init()
@@ -65,7 +175,97 @@ class BaseCrossingEnv:
         # Camera and trails
         self.agent_trails = {}
         self.camera = Camera(center_lat=center_lat, center_lon=center_lon, zoom_km=667)
-    
+        
+        # Observation space: ego_state (6) + threat_features (NUM_AC_STATE*9) + action_history (4) + multi_heading_cpa (NUM_HEADING_OFFSETS+1) + nearby_agents_ego_states (4*10)
+        obs_dim = 6 + NUM_AC_STATE * 9 + 4 + (NUM_HEADING_OFFSETS + 1) + 4 * 10
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+        )
+        
+    def reset(self, seed=None, options=None):
+        self.resets_counter += 1
+        
+        # ⚡ Logging nur bei Debug-Level (reduziert Overhead beim Training)
+        if self.all_agents is not None and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"\n{'='*100}")
+            logger.debug(f"RESET #{self.resets_counter} - Previous Episode Summary:")
+            logger.debug(self._get_info())
+            logger.debug(f"{'='*100}\n")
+        
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+        
+        self.sim.traf_reset()
+        self.steps = 0
+ 
+        self.num_episodes += 1
+        self.total_reward = 0
+        self.total_intrusions = 0
+
+        self.cumulative_drift_reward = 0.0
+        self.cumulative_intrusion_reward = 0.0
+        self.cumulative_cpa_warning_reward = 0.0
+        self.cumulative_waypoint_bonus = 0.0
+        self.cumulative_noop_reward = 0.0
+        self.cumulative_collision_penalty = 0.0
+        
+        logger.debug(f"Generating aircraft for episode #{self.num_episodes}...")
+        self._gen_aircraft(self.num_episodes)
+        if self.render_mode is not None:
+            self.agent_trails = {agent.id: [] for agent in self.all_agents.get_all_agents()}
+        
+        logger.debug(f"Computing initial observation...")
+        observations = self._get_observation()
+        infos = self._get_info()
+        
+        logger.debug(f"Episode #{self.num_episodes} initialized. Initial observation shape: {observations.shape}")
+
+        return observations, infos
+       
+    def _get_info(self):
+        active_agent = self.all_agents.get_active_agent()
+
+        total_action_age = sum(agent.action_age for agent in self.all_agents.agents)
+        avg_action_age = total_action_age / len(self.all_agents.agents) if len(self.all_agents.agents) > 0 else 0
+        avg_action_age_seconds = avg_action_age * AGENT_INTERACTION_TIME
+        
+        last_reward_components = active_agent.last_reward_components if active_agent.last_reward_components else {}
+        
+        return {
+            'avg_reward': float(self.total_reward/self.steps if self.steps > 0 else 0),
+            'intrusions': self.total_intrusions,
+            'drift_active_agent': float(active_agent.drift * 180 / np.pi),
+            'agent_finished': bool(self.all_agents.is_active_agent_finished()),
+            'is_success': bool(self.all_agents.is_active_agent_finished() and self.total_intrusions == 0),
+            'steps': int(self.steps),
+            'waypoints_collected': int(active_agent.waypoints_collected),
+            'actions_noop': int(self.actions_noop_count),
+            'actions_steer': int(self.actions_steer_count),
+            'last_continuous_action': float(self.last_continuous_action),
+            'num_episodes': int(self.num_episodes),
+            'cumulative_drift_reward': float(self.cumulative_drift_reward),
+            'cumulative_action_age_reward': float(self.cumulative_action_age_reward),
+            'cumulative_cpa_warning_reward': float(self.cumulative_cpa_warning_reward),
+            'cumulative_waypoint_bonus': float(self.cumulative_waypoint_bonus),
+            'cumulative_collision_penalty': float(self.cumulative_collision_penalty),
+            'cumulative_noop_reward': float(self.cumulative_noop_reward),
+            'avg_action_age': float(avg_action_age),
+            'avg_action_age_seconds': float(avg_action_age_seconds),
+            'total_cumulative_reward': float(self.cumulative_drift_reward + self.cumulative_intrusion_reward + 
+                                              self.cumulative_action_age_reward + self.cumulative_cpa_warning_reward +
+                                              self.cumulative_waypoint_bonus +
+                                              self.cumulative_collision_penalty +
+                                              self.cumulative_noop_reward),
+
+            'last_reward_drift': float(last_reward_components.get('drift', 0.0)),
+            'last_reward_action_age': float(last_reward_components.get('action_age', 0.0)),
+            'last_reward_cpa_warning': float(last_reward_components.get('cpa_warning', 0.0)),
+            'last_reward_proximity': float(last_reward_components.get('proximity', 0.0)),
+            'last_reward_noop': float(last_reward_components.get('noop', 0.0)),
+            'last_reward_total': float(last_reward_components.get('total', 0.0))
+        }
+        
     def _load_parser_data(self, json_path: str):
         """Load parser data once and cache it"""
         if self.parser_cache is None or self.parser_cache_path != json_path:
@@ -218,6 +418,78 @@ class BaseCrossingEnv:
             agent.turning_rate
         ], dtype=np.float32)
     
+    def _compute_nearby_agents_ego_states(self, agent: Agent, ac_lat: float, ac_lon: float, ac_hdg: float, ac_tas: float) -> np.ndarray:
+        """Compute ego states of 4 nearest friendly agents using Numba optimization
+        
+        Returns array of shape (4, 10) with normalized ego states:
+        - Heading (cos, sin)
+        - Speed
+        - Drift
+        - Vertical separation
+        - Distance to waypoint
+        - Relative position (rel_lat, rel_lon)
+        - Relative velocity (rel_speed_x, rel_speed_y)
+        
+        Filler slot: [1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0] for missing agents
+        """
+        # Collect data from all other agents (vectorized preparation)
+        all_agents_list = self.all_agents.get_all_agents()
+        n_other_agents = 0
+        
+        # Count valid agents
+        for other_agent in all_agents_list:
+            if other_agent.id != agent.id and not other_agent.is_finished:
+                n_other_agents += 1
+        
+        if n_other_agents == 0:
+            FILLER_SLOT = np.array([1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            return np.array([FILLER_SLOT] * 4, dtype=np.float32)
+        
+        # Prepare vectorized arrays for Numba
+        other_hdgs = np.zeros(n_other_agents, dtype=np.float64)
+        other_speeds = np.zeros(n_other_agents, dtype=np.float32)
+        other_drifts = np.zeros(n_other_agents, dtype=np.float32)
+        other_dist_to_wp = np.zeros(n_other_agents, dtype=np.float32)
+        other_lats = np.zeros(n_other_agents, dtype=np.float64)
+        other_lons = np.zeros(n_other_agents, dtype=np.float64)
+        other_tas_values = np.zeros(n_other_agents, dtype=np.float64)
+        
+        idx = 0
+        for other_agent in all_agents_list:
+            if other_agent.id == agent.id or other_agent.is_finished:
+                continue
+            
+            other_lat, other_lon, _, other_tas = self.sim.traf_get_state(other_agent.id)
+            
+            other_hdgs[idx] = other_agent.ac_hdg
+            other_speeds[idx] = other_agent.speed
+            other_drifts[idx] = other_agent.drift
+            other_dist_to_wp[idx] = other_agent.distance_to_waypoint
+            other_lats[idx] = other_lat
+            other_lons[idx] = other_lon
+            other_tas_values[idx] = other_tas
+            idx += 1
+        
+        # Call Numba-optimized function
+        nearby_ego_states = compute_nearby_agents_ego_states_numba(
+            other_hdgs=other_hdgs,
+            other_speeds=other_speeds,
+            other_drifts=other_drifts,
+            other_dist_to_wp=other_dist_to_wp,
+            other_lats=other_lats,
+            other_lons=other_lons,
+            other_tas_values=other_tas_values,
+            ac_lat=ac_lat,
+            ac_lon=ac_lon,
+            ac_hdg=ac_hdg,
+            ac_tas=ac_tas,
+            obs_distance=OBS_DISTANCE,
+            max_speed=MAX_SPEED,
+            n_agents_to_return=4
+        )
+        
+        return nearby_ego_states
+    
     def _select_intruders_by_cpa(
         self, agent: Agent, ac_lat: float, ac_lon: float, ac_hdg: float, ac_tas: float, collision_info_cache: Dict
     ) -> List[str]:
@@ -328,8 +600,9 @@ class BaseCrossingEnv:
         Returns dict with:
         - ego_state: (6) Heading, Speed, Drift, V-Sep, Distance to Waypoint
         - threat_features: (NUM_AC_STATE*9) Intruder Features (9 per intruder)
-        - action_history: (5) Last Action, Age, Turn Rate, Speed Action
+        - action_history: (4) Last Action, Age, Turn Rate, Speed Action
         - multi_heading_cpa: (NUM_HEADING_OFFSETS) Min time_to_cpa for each heading offset
+        - nearby_agents_ego_states: (4, 10) Ego states of 4 nearest agents (heading, speed, drift, v-sep, waypoint dist, rel_lat, rel_lon, rel_vel_x, rel_vel_y)
         """
         if agent is None:
             agent = self.all_agents.get_active_agent()
@@ -341,37 +614,36 @@ class BaseCrossingEnv:
         ego_hdg_cos = np.cos(ac_hdg_rad)
         ego_hdg_sin = np.sin(ac_hdg_rad)
         
-        speed_normalized = agent.speed_normalized
-        drift_normalized = agent.drift_normalized
-        vertical_separation_normalized = 1.0
-        distance_to_waypoint_normalized = agent.distance_to_waypoint_normalized
+        speed = agent.speed
+        drift = agent.drift
+        vertical_separation = 1.0
+        distance_to_waypoint = agent.distance_to_waypoint
         
         # Features
         ego_state = np.array([
             ego_hdg_cos, ego_hdg_sin,
-            speed_normalized,
-            drift_normalized,
-            vertical_separation_normalized,
-            distance_to_waypoint_normalized
+            speed,
+            drift,
+            vertical_separation,
+            distance_to_waypoint
         ], dtype=np.float32)
         threat_features = self._compute_intruder_features(agent, ac_lat, ac_lon, ac_hdg, ac_tas)
         multi_heading_cpa = self._compute_multi_heading_cpa_features(agent, ac_lat, ac_lon, ac_hdg, ac_tas)
         action_history = self._compute_action_history(agent)
+        nearby_agents_ego_states = self._compute_nearby_agents_ego_states(agent, ac_lat, ac_lon, ac_hdg, ac_tas)
         
         return {
             'ego_state': ego_state,
             'threat_features': threat_features,
             'action_history': action_history,
-            'multi_heading_cpa': multi_heading_cpa
+            'multi_heading_cpa': multi_heading_cpa,
+            'nearby_agents_ego_states': nearby_agents_ego_states
         }
     
     def _step(self, action):
         if self.all_agents.is_active_agent_finished():
             raise Exception("Active agent has already finished, this should not happen")
-
         aktiv_agent = self.all_agents.get_active_agent()
-        self._set_action(action, aktiv_agent)
-
         self.sim.sim_step(float(AGENT_INTERACTION_TIME))
         
         for agent in self.all_agents.get_all_agents():
@@ -400,7 +672,8 @@ class BaseCrossingEnv:
             obs_dict['ego_state'],
             obs_dict['threat_features'],
             obs_dict['action_history'],
-            obs_dict['multi_heading_cpa']
+            obs_dict['multi_heading_cpa'],
+            obs_dict['nearby_agents_ego_states'].flatten()
         ])
         return flat_obs
     
@@ -420,9 +693,8 @@ class BaseCrossingEnv:
         """
         agent = self.all_agents.get_active_agent()
         
-        distance_to_waypoint = agent.distance_to_waypoint_normalized if agent.distance_to_waypoint_normalized != 0.0 else float(1e-6)
         drift_normalized = agent.drift / np.pi  # [0, 1]
-        drift_reward = (1.0 - drift_normalized)**2 * DRIFT_FACTOR / (distance_to_waypoint/ 2.0)
+        drift_reward = (1.0 - drift_normalized)**2 * DRIFT_FACTOR
         
         action_age_reward = 0.0
         if agent.is_noop:
@@ -466,25 +738,6 @@ class BaseCrossingEnv:
                         logger.debug(f"[Step {self.steps}] CPA-BASED REWARD: {intruder_id} "
                                    f"| time_to_sep={time_to_min_sep:.1f}s | dist_to_cpa={distance_to_cpa:.2f}NM "
                                    f"| urgency={time_urgency:.2f} | reward={cpa_avoidance_reward:+.3f}")
-    
-        proximity_reward = 0.0
-
-        waypoint = self.getNextWaypoint(agent)
-        ac_lat, ac_lon = agent.ac_lat, agent.ac_lon
-        _, distance_to_waypoint = self.sim.geo_calculate_direction_and_distance(ac_lat, ac_lon, waypoint.lat, waypoint.lon)
-        
-        distance_normalized = np.clip(distance_to_waypoint / OBS_DISTANCE, 0.0, 1.0)
-        proximity_to_waypoint = 1.0 - distance_normalized  # [0, 1]: 1=ganz nah, 0=weit weg
-
-        waypoint_factor = 1.0 + float(agent.waypoints_collected)
-
-        proximity_reward = proximity_to_waypoint * PROXIMITY_REWARD_BASE * waypoint_factor
-        
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"[Step {self.steps}] PROXIMITY REWARD: "
-                        f"dist_to_wp={distance_to_waypoint:.2f}NM | proximity_norm={proximity_to_waypoint:.3f} | "
-                        f"waypoints_collected={agent.waypoints_collected} | factor={waypoint_factor:.1f} | "
-                        f"reward={proximity_reward:+.3f}")
         
         noop_reward = 0.0
         if agent.is_noop:
@@ -496,11 +749,20 @@ class BaseCrossingEnv:
                         f"reward={noop_reward:+.3f}")
             
         waypoint_bonus = agent.waypoint_reached_this_step * WAYPOINT_BONUS
+        
+        collision_penalty = 0.0
+        if agent.intrusions_caused_by_last_action > 0:
+            collision_penalty = -COLLISION_PENALTY * agent.intrusions_caused_by_last_action
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"[Step {self.steps}] COLLISION PENALTY: "
+                            f"Intrusions={agent.intrusions_caused_by_last_action} | "
+                            f"penalty={collision_penalty:+.3f}")
+            
 
         reward = (drift_reward + 
                  action_age_reward +
                  collision_avoidance_reward +
-                 proximity_reward +
+                 collision_penalty +
                  noop_reward +
                  waypoint_bonus)
         
@@ -518,7 +780,7 @@ class BaseCrossingEnv:
             'drift': float(drift_reward),
             'action_age': float(action_age_reward),
             'cpa_warning': float(collision_avoidance_reward),
-            'proximity': float(proximity_reward),
+            'collision_penalty': float(collision_penalty),
             'noop': float(noop_reward),
             'total': float(reward)
         }
@@ -526,7 +788,7 @@ class BaseCrossingEnv:
         self.cumulative_drift_reward += drift_reward
         self.cumulative_action_age_reward += action_age_reward
         self.cumulative_cpa_warning_reward += collision_avoidance_reward
-        self.cumulative_proximity_reward += proximity_reward
+        self.cumulative_collision_penalty += collision_penalty
         self.cumulative_noop_reward += noop_reward
         self.total_reward += reward
         return reward
@@ -1676,7 +1938,7 @@ class BaseCrossingEnv:
         text = f"Waypoints: {info['waypoints_collected']} | Avg Reward: {info['avg_reward']:+.3f}"
         text_surf = font_small.render(text, True, (0, 0, 0))
         canvas.blit(text_surf, (debug_x_right, debug_y_right))
-
+        
     def render(self, mode="human"):
         """Render the environment"""
         self.render_mode = mode

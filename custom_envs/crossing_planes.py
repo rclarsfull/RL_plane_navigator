@@ -32,7 +32,7 @@ from .base_crossing_env import BaseCrossingEnv
 logger = logging.getLogger(__name__)
 
 
-class Cross_env(gym.Env, BaseCrossingEnv):
+class Cross_env(BaseCrossingEnv, gym.Env):
     metadata = {
         "name": "merge_v1",
         "render_modes": ["rgb_array","human"],
@@ -40,8 +40,7 @@ class Cross_env(gym.Env, BaseCrossingEnv):
 
     def __init__(self, render_mode=None):
         # Initialize base class
-        BaseCrossingEnv.__init__(
-            self, 
+        super().__init__(
             center_lat=CENTER_LAT, 
             center_lon=CENTER_LON, 
             render_mode=render_mode,
@@ -60,21 +59,7 @@ class Cross_env(gym.Env, BaseCrossingEnv):
         self.actions_steer_count = 0
         self.last_continuous_action = 0.0
         
-        self.cumulative_drift_reward = 0.0
-        self.cumulative_intrusion_reward = 0.0
-        self.cumulative_action_age_reward = 0.0
-        self.cumulative_cpa_warning_reward = 0.0
-        self.cumulative_waypoint_bonus = 0.0
-        self.cumulative_proximity_reward = 0.0
-        self.cumulative_noop_reward = 0.0
-
         self.action_markers = {}
-
-        # +1: zusätzlicher CPA-Feature-Eintrag für Ziel-Heading
-        obs_dim = 10 + NUM_AC_STATE * 9 + (NUM_HEADING_OFFSETS + 1)
-        self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
-        )
 
         self.num_steer_bins = 37  
         self.action_space = gym.spaces.MultiDiscrete([3, self.num_steer_bins])
@@ -85,111 +70,27 @@ class Cross_env(gym.Env, BaseCrossingEnv):
         self.num_episodes = 0
         self.total_intrusions = 0
         
-
-    def reset(self, seed=None, options=None):
-        self.resets_counter += 1
-        
-        # ⚡ Logging nur bei Debug-Level (reduziert Overhead beim Training)
-        if self.all_agents is not None and logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"\n{'='*100}")
-            logger.debug(f"RESET #{self.resets_counter} - Previous Episode Summary:")
-            logger.debug(self._get_info())
-            logger.debug(f"{'='*100}\n")
-        
-
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-        
-        self.sim.traf_reset()
-
-        self.steps = 0
- 
-        self.num_episodes += 1
-        self.total_reward = 0
-        self.total_intrusions = 0
-        self.actions_noop_count = 0
-        self.actions_steer_count = 0
-        self.last_continuous_action = 0.0
-
-        self.cumulative_drift_reward = 0.0
-        self.cumulative_intrusion_reward = 0.0
-        self.cumulative_action_age_reward = 0.0
-        self.cumulative_cpa_warning_reward = 0.0
-        self.cumulative_waypoint_bonus = 0.0
-        self.cumulative_proximity_reward = 0.0
-        self.cumulative_noop_reward = 0.0
-        
-        logger.debug(f"Generating aircraft for episode #{self.num_episodes}...")
-        self._gen_aircraft()
-        self.agent_trails = {agent.id: [] for agent in self.all_agents.get_all_agents()}
-        self.action_markers = {agent.id: [] for agent in self.all_agents.get_all_agents()}
-        for agent in self.all_agents.get_all_agents():
-            agent.action_markers_with_steering = []
-
-        logger.debug(f"Computing initial observation...")
-        observations = self._get_observation()
-        infos = self._get_info()
-        
-        logger.debug(f"Episode #{self.num_episodes} initialized. Initial observation shape: {observations.shape}")
-
-        return observations, infos
-    
     def step(self, action):
         """Wrapper - uses base class implementation"""
+        aktiv_agent = self.all_agents.get_active_agent()
+        self._set_action(action, aktiv_agent)
         return BaseCrossingEnv._step(self, action)
     
-    def _gen_aircraft(self):
-        """Wrapper method that calls base class implementation"""
-        BaseCrossingEnv._gen_aircraft(self, self.num_episodes)
+    def _gen_aircraft(self, num_episodes):
+        """Wrapper method that calls base class implementation
+
+        Accepts `num_episodes` because `BaseCrossingEnv.reset` calls
+        `self._gen_aircraft(self.num_episodes)`.
+        """
+        return BaseCrossingEnv._gen_aircraft(self, num_episodes)
 
     def _get_observation(self, agent: Optional[Agent] = None) -> np.ndarray:
         """Wrapper - uses base class implementation"""
         return BaseCrossingEnv._get_observation(self, agent)
 
-    def _get_info(self):
-        active_agent = self.all_agents.get_active_agent()
-
-        total_action_age = sum(agent.action_age for agent in self.all_agents.agents)
-        avg_action_age = total_action_age / len(self.all_agents.agents) if len(self.all_agents.agents) > 0 else 0
-        avg_action_age_seconds = avg_action_age * AGENT_INTERACTION_TIME
-        
-        last_reward_components = active_agent.last_reward_components if active_agent.last_reward_components else {}
-        
-        return {
-            'avg_reward': float(self.total_reward/self.steps if self.steps > 0 else 0),
-            'intrusions': self.total_intrusions,
-            'drift_active_agent': float(active_agent.drift * 180 / np.pi),
-            'agent_finished': bool(self.all_agents.is_active_agent_finished()),
-            'is_success': bool(self.all_agents.is_active_agent_finished() and self.total_intrusions == 0),
-            'steps': int(self.steps),
-            'waypoints_collected': int(active_agent.waypoints_collected),
-            'actions_noop': int(self.actions_noop_count),
-            'actions_steer': int(self.actions_steer_count),
-            'last_continuous_action': float(self.last_continuous_action),
-            'num_episodes': int(self.num_episodes),
-            'cumulative_drift_reward': float(self.cumulative_drift_reward),
-            'cumulative_action_age_reward': float(self.cumulative_action_age_reward),
-            'cumulative_cpa_warning_reward': float(self.cumulative_cpa_warning_reward),
-            'cumulative_waypoint_bonus': float(self.cumulative_waypoint_bonus),
-            'cumulative_proximity_reward': float(self.cumulative_proximity_reward),
-            'cumulative_noop_reward': float(self.cumulative_noop_reward),
-            'avg_action_age': float(avg_action_age),
-            'avg_action_age_seconds': float(avg_action_age_seconds),
-            'total_cumulative_reward': float(self.cumulative_drift_reward + self.cumulative_intrusion_reward + 
-                                              self.cumulative_action_age_reward + self.cumulative_cpa_warning_reward +
-                                              self.cumulative_waypoint_bonus +
-                                              self.cumulative_proximity_reward +
-                                              self.cumulative_noop_reward),
-
-            'last_reward_drift': float(last_reward_components.get('drift', 0.0)),
-            'last_reward_action_age': float(last_reward_components.get('action_age', 0.0)),
-            'last_reward_cpa_warning': float(last_reward_components.get('cpa_warning', 0.0)),
-            'last_reward_proximity': float(last_reward_components.get('proximity', 0.0)),
-            'last_reward_noop': float(last_reward_components.get('noop', 0.0)),
-            'last_reward_total': float(last_reward_components.get('total', 0.0))
-        }
-
+    def reset(self, seed=None, options=None):
+        return BaseCrossingEnv.reset(self,seed=seed, options=options)
+    
     def _get_reward(self) -> float:
         """Wrapper - uses base class implementation"""
         return BaseCrossingEnv._get_reward(self)
@@ -289,7 +190,7 @@ class Cross_env(gym.Env, BaseCrossingEnv):
                     agent.action_markers_with_steering.pop(0)
             
     def render(self):
-        BaseCrossingEnv.render(self,self.render_mode)
+        BaseCrossingEnv.render(self, self.render_mode)
         
     def close(self):
         BaseCrossingEnv.close(self)
