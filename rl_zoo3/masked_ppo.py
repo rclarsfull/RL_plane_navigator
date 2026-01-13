@@ -8,6 +8,7 @@ from gymnasium import spaces
 
 
 from sb3_plus import MultiOutputPPO
+from sb3_plus.mimo.on_policy_algorithm import MultiOutputOnPolicyAlgorithm
 from sb3_plus.mimo.policies import MultiOutputActorCriticPolicy, MIMOActorCriticPolicy, BaseFeaturesExtractor, FlattenExtractor
 from sb3_plus.mimo.distributions import MultiOutputDistribution, FlattenCategoricalDistribution
 from stable_baselines3.common import distributions as sb3_dist
@@ -85,34 +86,109 @@ class Masked_MultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
     ):
 
         super().__init__(
-            observation_space,
-            action_space,
-            features_extractor_class,
-            features_extractor_kwargs,
-            optimizer_class=optimizer_class,
-            optimizer_kwargs=optimizer_kwargs,
-            squash_output=squash_output,
-            normalize_images=normalize_images,
+            observation_space=observation_space,
+            action_space=action_space,
+            lr_schedule=lr_schedule,
             net_arch=net_arch,
             activation_fn=activation_fn,
             ortho_init=ortho_init,
             use_sde=use_sde,
             log_std_init=log_std_init,
-            share_features_extractor=share_features_extractor
-            
+            squash_output=squash_output,
+            features_extractor_class=features_extractor_class,
+            features_extractor_kwargs=features_extractor_kwargs,
+            share_features_extractor=share_features_extractor,
+            normalize_images=normalize_images,
+            optimizer_class=optimizer_class,
+            optimizer_kwargs=optimizer_kwargs,
         )
 
         # Action distribution
         self.action_dist = Masked_MultiOutputDistribution.make_proba_distribution(action_space) 
 
         self._build(lr_schedule)
+        
+    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Forward pass in all the networks (actor and critic)
+        :param obs: Observation
+        :param deterministic: Whether to sample or use deterministic actions
+        :return: action, value and log probability of the action
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            pi_features, vf_features = features
+            latent_pi = self.mlp_extractor.forward_actor(pi_features)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        # Evaluate the values for the given observations
+        values = self.value_net(latent_vf)
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        actions = distribution.get_actions(deterministic=deterministic)
+        log_prob = distribution.log_prob(actions)
+        
+        assert(isinstance(distribution, Masked_MultiOutputDistribution), "This should be a Masked Distribution")
+        type_action = actions[:, 0]
+        steer_action = actions[:, 1]
+        mask = (type_action == STEER_INDEX).bool()
+        
+        stack_log_prob = distribution.stack_log_prob(actions)
+        action_type_log_prob = stack_log_prob[:,0]
+        #steer_log_prob = th.where(mask, stack_log_prob[:,1], stack_log_prob[:,1].detach())
+        steer_log_prob = th.where(mask, stack_log_prob[:,1], th.zeros_like(stack_log_prob[:,1]))
+        masked_log_prob = action_type_log_prob + steer_log_prob
+        
+        actions = actions.reshape((-1, *get_action_shape(self.action_space)))
+        return actions, values, masked_log_prob
+    
+    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Evaluate actions according to the current policy,
+        given the observations.
+        :param obs:
+        :param actions:
+        :return: estimated value, log likelihood of taking those actions
+            and entropy of the action distribution.
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            pi_features, vf_features = features
+            latent_pi = self.mlp_extractor.forward_actor(pi_features)
+            latent_vf = self.mlp_extractor.forward_critic(vf_features)
+            
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        values = self.value_net(latent_vf)
+        assert(isinstance(distribution, Masked_MultiOutputDistribution), "This should be a Masked Distribution")
+        type_action = actions[:, 0]
+        steer_action = actions[:, 1]
+        mask = (type_action == STEER_INDEX).bool()
+        
+        stack_log_prob = distribution.stack_log_prob(actions)
+        action_type_log_prob = stack_log_prob[:,0]
+        #steer_log_prob = th.where(mask, stack_log_prob[:,1], stack_log_prob[:,1].detach())
+        steer_log_prob = th.where(mask, stack_log_prob[:,1], th.zeros_like(stack_log_prob[:,1]))
+        masked_log_prob = action_type_log_prob + steer_log_prob
+        
+        
+        stack_entropy = distribution.stack_entropy()
+        action_type_entropy = stack_entropy[:,0]
+        steer_entropy = th.where(mask, stack_entropy[:,1], stack_entropy[:,1].detach())
+        #steer_entropy = th.where(mask, stack_entropy[:,1], th.zeros_like(stack_entropy[:,1])) #Das erzeugt indirekt ein biast , das die Entropie sinkt wenn der STEER Zweig nicht genutzt wird. Was dazu führt dass die Polecy öffter Steert.
+        masked_entropy = action_type_entropy + steer_entropy
+        
+        return values, masked_log_prob, masked_entropy
    
     
 
 class MaskedMultiOutputPPO(MultiOutputPPO):
     
     policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
-        "MultiOutputPolicy": MultiOutputActorCriticPolicy,
+        "MaskedMultiOutputPolicy": Masked_MultiOutputActorCriticPolicy,
     }
 
     def __init__(
@@ -142,7 +218,7 @@ class MaskedMultiOutputPPO(MultiOutputPPO):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
     ):
-        super().__init__(
+        MultiOutputOnPolicyAlgorithm.__init__(self,
             policy,
             env,
             learning_rate=learning_rate,
@@ -163,10 +239,10 @@ class MaskedMultiOutputPPO(MultiOutputPPO):
             _init_setup_model=False,
         )
 
-        if (policy not in ["MultiOutputPolicy",  Masked_MultiOutputActorCriticPolicy]
+        if (policy not in ["MaskedMultiOutputPolicy",  Masked_MultiOutputActorCriticPolicy]
             and isinstance(self.action_space, (spaces.Dict, spaces.Tuple))
         ):
-            raise ValueError(f"You must use `MultiOutputPolicy` or `MIMOPolicy` when working with "
+            raise ValueError(f"You must use `MaskedMultiOutputPolicy` or `Masked_MultiOutputActorCriticPolicy` when working with "
                              f"dict or tuple action space, not {policy}")
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -204,77 +280,6 @@ class MaskedMultiOutputPPO(MultiOutputPPO):
         if _init_setup_model:
             self._setup_model()
             
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
-        """
-        Forward pass in all the networks (actor and critic)
-        :param obs: Observation
-        :param deterministic: Whether to sample or use deterministic actions
-        :return: action, value and log probability of the action
-        """
-        # Preprocess the observation if needed
-        features = self.extract_features(obs)
-        if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
-        else:
-            pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
-        # Evaluate the values for the given observations
-        values = self.value_net(latent_vf)
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
-        
-        assert(isinstance(distribution, Masked_MultiOutputDistribution), "This should be a Masked Distribution")
-        type_action = actions[:, 0]
-        steer_action = actions[:, 1]
-        mask = (type_action == STEER_INDEX).float()
-        
-        stack_log_prob = distribution.stack_log_prob(actions)
-        action_type_log_prob = stack_log_prob[:,0]
-        steer_log_prob = stack_log_prob[:,1]
-        masked_log_prob = action_type_log_prob + mask * steer_log_prob
-        
-        actions = actions.reshape((-1, *get_action_shape(self.action_space)))
-        return actions, values, masked_log_prob
-    
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
-        """
-        Evaluate actions according to the current policy,
-        given the observations.
-        :param obs:
-        :param actions:
-        :return: estimated value, log likelihood of taking those actions
-            and entropy of the action distribution.
-        """
-        # Preprocess the observation if needed
-        features = self.extract_features(obs)
-        if self.share_features_extractor:
-            latent_pi, latent_vf = self.mlp_extractor(features)
-        else:
-            pi_features, vf_features = features
-            latent_pi = self.mlp_extractor.forward_actor(pi_features)
-            latent_vf = self.mlp_extractor.forward_critic(vf_features)
-            
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        assert(isinstance(distribution, Masked_MultiOutputDistribution), "This should be a Masked Distribution")
-        type_action = actions[:, 0]
-        steer_action = actions[:, 1]
-        mask = (type_action == STEER_INDEX).float()
-        
-        stack_log_prob = distribution.stack_log_prob(actions)
-        action_type_log_prob = stack_log_prob[:,0]
-        steer_log_prob = stack_log_prob[:,1]
-        masked_log_prob = action_type_log_prob + mask * steer_log_prob
-        
-        values = self.value_net(latent_vf)
-        
-        stack_entropy = distribution.stack_entropy()
-        action_type_entropy = stack_entropy[:,0]
-        steer_entropy = stack_entropy[:,1]
-        masked_entropy = action_type_entropy + mask * steer_entropy
-        
-        return values, masked_log_prob, masked_entropy
     
     def learn(
             self: MaskedSelfMultiOutputPPO,
@@ -285,7 +290,8 @@ class MaskedMultiOutputPPO(MultiOutputPPO):
             reset_num_timesteps: bool = True,
             progress_bar: bool = False,
     ) -> MaskedSelfMultiOutputPPO:
-        super().learn(
+        MultiOutputOnPolicyAlgorithm.learn(
+            self=self,
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
