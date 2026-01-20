@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Seeds and algos to test
-SEEDS=(666 1337 42 2024 99 22)
+SEEDS=(6661 13371 421 20241 991 221 333 444 555 323 312)
 ALGOS=(multioutputppo masked_ppo)
 
 # Env and logging
@@ -28,7 +28,7 @@ for SEED in "${SEEDS[@]}"; do
     echo "Starte ${ALGO}..."
     python train.py \
       --algo "${ALGO}" \
-      --verbose 1 \
+      --verbose 0 \
       --env "${ENV_ID}" \
       --vec-env subproc \
       --device cpu \
