@@ -39,6 +39,22 @@ def filter_scores(rows: List[dict[str, Any]], env: str | None, algo: str) -> np.
     return np.asarray(vals, dtype=float)
 
 
+def filter_success_rates(rows: List[dict[str, Any]], env: str | None, algo: str) -> np.ndarray:
+    vals: List[float] = []
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        v = r.get("last_success_rate")
+        if v and v != "":
+            try:
+                vals.append(float(v))
+            except Exception:
+                pass
+    return np.asarray(vals, dtype=float)
+
+
 def iqm(x: np.ndarray) -> float:
     if x.size == 0:
         return np.nan
@@ -72,6 +88,34 @@ def bootstrap_diff_iqm(a: np.ndarray, b: np.ndarray, B: int = 5000) -> Tuple[flo
         rb = np.random.choice(b, size=Kb, replace=True)
         sa[i] = iqm(ra)
         sb[i] = iqm(rb)
+    diff = sa - sb
+    return tuple(np.percentile(diff, [2.5, 50, 97.5]))
+
+
+def bootstrap_mean(values: np.ndarray, B: int = 5000) -> Tuple[float, float, float]:
+    """Bootstrap confidence interval for mean (used for success rates)."""
+    if values.size == 0:
+        return (np.nan, np.nan, np.nan)
+    K = values.size
+    samples = np.empty(B, dtype=float)
+    for b in range(B):
+        res = np.random.choice(values, size=K, replace=True)
+        samples[b] = np.mean(res)
+    return tuple(np.percentile(samples, [2.5, 50, 97.5]))
+
+
+def bootstrap_diff_mean(a: np.ndarray, b: np.ndarray, B: int = 5000) -> Tuple[float, float, float]:
+    """Bootstrap CI for difference in means."""
+    if a.size == 0 or b.size == 0:
+        return (np.nan, np.nan, np.nan)
+    sa = np.empty(B, dtype=float)
+    sb = np.empty(B, dtype=float)
+    Ka, Kb = a.size, b.size
+    for i in range(B):
+        ra = np.random.choice(a, size=Ka, replace=True)
+        rb = np.random.choice(b, size=Kb, replace=True)
+        sa[i] = np.mean(ra)
+        sb[i] = np.mean(rb)
     diff = sa - sb
     return tuple(np.percentile(diff, [2.5, 50, 97.5]))
 
@@ -124,6 +168,21 @@ def main() -> None:
         print(f"{args.algo2}: IQM CI [2.5,50,97.5] = {ci2}")
         diff_ci = bootstrap_diff_iqm(s1, s2, B=args.B)
         print(f"Diff IQM ({args.algo} - {args.algo2}) CI [2.5,50,97.5] = {diff_ci}")
+
+    # Success Rate analysis (if available)
+    sr1 = filter_success_rates(rows, args.env, args.algo)
+    if sr1.size > 0:
+        sr_ci1 = bootstrap_mean(sr1, B=args.B)
+        print(f"{args.algo}: Success Rate CI [2.5,50,97.5] = {sr_ci1}")
+    
+    if args.algo2:
+        sr2 = filter_success_rates(rows, args.env, args.algo2)
+        if sr2.size > 0:
+            sr_ci2 = bootstrap_mean(sr2, B=args.B)
+            print(f"{args.algo2}: Success Rate CI [2.5,50,97.5] = {sr_ci2}")
+        if sr1.size > 0 and sr2.size > 0:
+            sr_diff = bootstrap_diff_mean(sr1, sr2, B=args.B)
+            print(f"Diff Success Rate ({args.algo} - {args.algo2}) CI [2.5,50,97.5] = {sr_diff}")
 
     # Performance profile for algo1
     if s1.size > 0:

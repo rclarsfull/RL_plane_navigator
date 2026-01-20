@@ -109,8 +109,10 @@ def load_npz_metrics(npz_path: Path) -> dict[str, Any]:
             metrics["best_eval_mean"] = float(mean_per_eval.max())
         if successes is not None and successes.size > 0:
             succ_arr = np.asarray(successes, dtype=float)
-            metrics["last_success_rate"] = float(succ_arr[-1])
-            metrics["best_success_rate"] = float(succ_arr.max())
+            # Compute success rate per evaluation (mean across episodes)
+            success_rate_per_eval = succ_arr.mean(axis=1)
+            metrics["last_success_rate"] = float(success_rate_per_eval[-1])
+            metrics["best_success_rate"] = float(success_rate_per_eval.max())
         if timesteps is not None and timesteps.size > 0:
             metrics["last_timestep"] = int(timesteps[-1])
     except Exception:
