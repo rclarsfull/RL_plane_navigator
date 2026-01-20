@@ -46,8 +46,6 @@ def compute_nearby_agents_ego_states_numba(
     ac_lon: float,
     ac_hdg: float,
     ac_tas: float,
-    obs_distance: float,
-    max_speed: float,
     n_agents_to_return: int = 4
 ) -> np.ndarray:
     """
@@ -64,8 +62,6 @@ def compute_nearby_agents_ego_states_numba(
         ac_lat, ac_lon: Main agent position
         ac_hdg: Main agent heading in degrees
         ac_tas: Main agent true air speed
-        obs_distance: Observation distance for normalization
-        max_speed: Maximum speed for normalization
         n_agents_to_return: Number of agents to return (default 4)
     
     Returns:
@@ -116,12 +112,11 @@ def compute_nearby_agents_ego_states_numba(
         rel_vel_x = other_vel_x - own_vel_x
         rel_vel_y = other_vel_y - own_vel_y
         
-        # No normalization/clipping here, just raw values
         output[out_idx, 0] = np.float32(hdg_cos)
         output[out_idx, 1] = np.float32(hdg_sin)
         output[out_idx, 2] = np.float32(other_speeds[agent_idx])
         output[out_idx, 3] = np.float32(other_drifts[agent_idx])
-        output[out_idx, 4] = np.float32(1.0)  # vertical_separation_normalized
+        output[out_idx, 4] = np.float32(1.0)  
         output[out_idx, 5] = np.float32(other_dist_to_wp[agent_idx])
         output[out_idx, 6] = np.float32(rel_lats[agent_idx])
         output[out_idx, 7] = np.float32(rel_lons[agent_idx])
@@ -157,6 +152,10 @@ class BaseCrossingEnv:
         self.clock = None
         self.is_paused = False
         
+        self.steps = 0
+        self.step_limit = int(TIME_LIMIT / AGENT_INTERACTION_TIME)
+        self.resets_counter = 0
+        
         self.cumulative_drift_reward = 0.0
         self.cumulative_intrusion_reward = 0.0
         self.cumulative_action_age_reward = 0.0
@@ -185,7 +184,6 @@ class BaseCrossingEnv:
     def reset(self, seed=None, options=None):
         self.resets_counter += 1
         
-        # ⚡ Logging nur bei Debug-Level (reduziert Overhead beim Training)
         if self.all_agents is not None and logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"\n{'='*100}")
             logger.debug(f"RESET #{self.resets_counter} - Previous Episode Summary:")
@@ -225,11 +223,6 @@ class BaseCrossingEnv:
        
     def _get_info(self):
         active_agent = self.all_agents.get_active_agent()
-
-        total_action_age = sum(agent.action_age for agent in self.all_agents.agents)
-        avg_action_age = total_action_age / len(self.all_agents.agents) if len(self.all_agents.agents) > 0 else 0
-        avg_action_age_seconds = avg_action_age * AGENT_INTERACTION_TIME
-        
         last_reward_components = active_agent.last_reward_components if active_agent.last_reward_components else {}
         
         return {
@@ -240,9 +233,6 @@ class BaseCrossingEnv:
             'is_success': bool(self.all_agents.is_active_agent_finished() and self.total_intrusions == 0),
             'steps': int(self.steps),
             'waypoints_collected': int(active_agent.waypoints_collected),
-            'actions_noop': int(self.actions_noop_count),
-            'actions_steer': int(self.actions_steer_count),
-            'last_continuous_action': float(self.last_continuous_action),
             'num_episodes': int(self.num_episodes),
             'cumulative_drift_reward': float(self.cumulative_drift_reward),
             'cumulative_action_age_reward': float(self.cumulative_action_age_reward),
@@ -250,14 +240,11 @@ class BaseCrossingEnv:
             'cumulative_waypoint_bonus': float(self.cumulative_waypoint_bonus),
             'cumulative_collision_penalty': float(self.cumulative_collision_penalty),
             'cumulative_noop_reward': float(self.cumulative_noop_reward),
-            'avg_action_age': float(avg_action_age),
-            'avg_action_age_seconds': float(avg_action_age_seconds),
             'total_cumulative_reward': float(self.cumulative_drift_reward + self.cumulative_intrusion_reward + 
                                               self.cumulative_action_age_reward + self.cumulative_cpa_warning_reward +
                                               self.cumulative_waypoint_bonus +
                                               self.cumulative_collision_penalty +
                                               self.cumulative_noop_reward),
-
             'last_reward_drift': float(last_reward_components.get('drift', 0.0)),
             'last_reward_action_age': float(last_reward_components.get('action_age', 0.0)),
             'last_reward_cpa_warning': float(last_reward_components.get('cpa_warning', 0.0)),
@@ -483,8 +470,6 @@ class BaseCrossingEnv:
             ac_lon=ac_lon,
             ac_hdg=ac_hdg,
             ac_tas=ac_tas,
-            obs_distance=OBS_DISTANCE,
-            max_speed=MAX_SPEED,
             n_agents_to_return=4
         )
         
@@ -771,7 +756,6 @@ class BaseCrossingEnv:
                         f"Drift={drift_reward:+.3f} | "
                         f"ActionAge={action_age_reward:+.3f} | "
                         f"CPA-Avoidance={collision_avoidance_reward:+.3f} | "
-                        f"Proximity={proximity_reward:+.3f} | "
                         f"NOOP={noop_reward:+.3f} | "
                         f"TOTAL={reward:+.3f}")
         
@@ -1082,7 +1066,7 @@ class BaseCrossingEnv:
         """Select one of the 4 scenarios based on probabilities: 3 random + 1 parser"""
         scenario_type = random.choices(
             ['crossing', 'merging', 'diverging', 'parser'],
-            weights=[0.50, 0.10, 0.02, 0.05],  # Adjusted to include parser (28%)
+            weights=[0.50, 0.10, 0.02, 0.05],  
             k=1
         )[0]
         
@@ -1240,7 +1224,7 @@ class BaseCrossingEnv:
             parser_path: Path to exercises.json for parser scenario
         """
         # Configure scenario parameters here
-        n_agents = random.randint(2, 4)          # Planned agents per episode
+        n_agents = random.randint(2, 6)          # Planned agents per episode
         n_random_agents = random.randint(1, 3)   # Random intruder agents
         
         logger.debug(f"Episode #{num_episodes}: Spawning {n_agents} planned agents + {n_random_agents} random agents")
@@ -1356,10 +1340,10 @@ class BaseCrossingEnv:
                            isinstance(x2, int) and isinstance(y2, int)):
                         continue
                     
-                    # Color by action type: noop=red, snap=blue, steer=green
+                    # Color by action type: noop=red, direct=blue, steer=green
                     if action_type_end == 'noop':
                         seg_color = (255, 0, 0)
-                    elif action_type_end == 'snap':
+                    elif action_type_end == 'direct':
                         seg_color = (0, 120, 255)
                     else:  # steer
                         seg_color = (0, 180, 0)

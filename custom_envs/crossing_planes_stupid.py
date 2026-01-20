@@ -92,14 +92,14 @@ class Cross_env(BaseCrossingEnv, gym.Env):
 
     def _get_observation(self, agent: Optional[Agent] = None) -> np.ndarray:
         """Wrapper - uses base class implementation"""
-        return BaseCrossingEnv._get_observation(self, agent)
+        return np.zeros(1)
 
     def reset(self, seed=None, options=None):
         return BaseCrossingEnv.reset(self,seed=seed, options=options)
     
     def _get_reward(self) -> float:
         """Wrapper - uses base class implementation"""
-        return BaseCrossingEnv._get_reward(self)
+        return 0.0
 
 
     def _set_action(self, action, agent: Agent) -> None:
@@ -130,26 +130,6 @@ class Cross_env(BaseCrossingEnv, gym.Env):
         else:
             x_pos, y_pos = None, None
 
-        if action_type == 0:  # NOOP
-            # NOOP Aktion
-            agent.is_noop = True
-            agent.last_action = 0
-            agent.last_action_continuous = 0.0
-            agent.last_action_type = 'noop'
-            self.last_continuous_action = 0.0
-            if is_active_agent:
-                self.actions_noop_count += 1
-            if self.render_mode is not None and x_pos is not None:
-                if agent.id in self.action_markers:
-                    self.action_markers[agent.id].append((x_pos, y_pos, 'noop'))
-                    if len(self.action_markers[agent.id]) > MAX_ACTION_MARKERS:
-                        self.action_markers[agent.id].pop(0)
-                if hasattr(agent, 'action_markers_with_steering'):
-                    agent.action_markers_with_steering.append((x_pos, y_pos, 'noop', 0.0, agent.action_age))
-                    if len(agent.action_markers_with_steering) > MAX_ACTION_MARKERS:
-                        agent.action_markers_with_steering.pop(0)
-            return
-
         # DIRECT (snap) oder STEER Aktion
         agent.is_noop = False
         agent.last_action = 1
@@ -162,26 +142,13 @@ class Cross_env(BaseCrossingEnv, gym.Env):
 
         _, _, current_heading, _ = self.sim.traf_get_state(agent.id)
 
-        if action_type == 1:  # DIRECT / SNAP
+        if True:  # DIRECT / SNAP
             waypoint = self.getNextWaypoint(agent)
             target_dir, _ = self.sim.geo_calculate_direction_and_distance(agent.ac_lat, agent.ac_lon, waypoint.lat, waypoint.lon)
             heading_new = bound_angle_positive_negative_180(target_dir)
             rel_delta = bound_angle_positive_negative_180(heading_new - current_heading)
             continuous_steering = float(np.clip(rel_delta / 180.0, -1.0, 1.0))
             agent.last_action_type = 'direct'
-        elif action_type == 2:  # STEER (nichtlineare Winkel aus Lookup-Tabelle)
-            if steering_index < 0 or steering_index >= self.num_steer_bins:
-                rel_deg = 0.0
-            else:
-                rel_deg = float(self.steer_angle_bins[steering_index])
-            heading_new = bound_angle_positive_negative_180(current_heading + rel_deg)
-            continuous_steering = float(np.clip(rel_deg / 180.0, -1.0, 1.0))
-            agent.last_action_type = 'steer'
-        else:
-            # Fallback (sollte nicht auftreten, da oben NOOP abgefangen)
-            heading_new = current_heading
-            continuous_steering = 0.0
-            agent.last_action_type = 'noop'
 
         # Setze Heading im Simulator
         self.sim.traf_set_heading(agent.id, heading_new)

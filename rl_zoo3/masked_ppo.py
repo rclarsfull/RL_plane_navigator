@@ -171,15 +171,23 @@ class Masked_MultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
         stack_log_prob = distribution.stack_log_prob(actions)
         action_type_log_prob = stack_log_prob[:,0]
         #steer_log_prob = th.where(mask, stack_log_prob[:,1], stack_log_prob[:,1].detach())
-        steer_log_prob = th.where(mask, stack_log_prob[:,1], th.zeros_like(stack_log_prob[:,1]))
+        steer_log_prob = th.where(mask, stack_log_prob[:,1], th.zeros_like(stack_log_prob[:,1]))  #Das macht das Training Instabiel
         masked_log_prob = action_type_log_prob + steer_log_prob
         
+        with th.no_grad():
+            type_probs = distribution.distribution[0].distribution.probs
+            p_steer = type_probs[:, STEER_INDEX]
         
+        #Die unveränderte einfache addition könnte für ein biast richtung nicht steer sorgen da der 
         stack_entropy = distribution.stack_entropy()
         action_type_entropy = stack_entropy[:,0]
-        steer_entropy = th.where(mask, stack_entropy[:,1], stack_entropy[:,1].detach())
+        steer_entropy = stack_entropy[:,1] #th.where(mask, stack_entropy[:,1], stack_entropy[:,1].detach())
         #steer_entropy = th.where(mask, stack_entropy[:,1], th.zeros_like(stack_entropy[:,1])) #Das erzeugt indirekt ein biast , das die Entropie sinkt wenn der STEER Zweig nicht genutzt wird. Was dazu führt dass die Polecy öffter Steert.
-        masked_entropy = action_type_entropy + steer_entropy
+        
+        #masked_entropy = action_type_entropy + steer_entropy
+        masked_entropy = action_type_entropy + p_steer * steer_entropy # auch bias für hohe P steer:  run 10 und 9
+        #bias_weight = 0.1 noch nicht getestet könnte bias reduzieren
+        #masked_entropy = masked_entropy - (bias_weight * p_steer)
         
         return values, masked_log_prob, masked_entropy
    

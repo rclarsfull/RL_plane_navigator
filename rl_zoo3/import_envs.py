@@ -9,6 +9,7 @@ from custom_envs.crossing_planes_conti import Cross_env as Cross_env_conti
 from custom_envs.crossing_planes_abs import Cross_env as Cross_env_abs
 from custom_envs.crossing_planes_hierarchical import CrossingPlanesHierarchical
 from custom_envs.crossing_planes_multiHead import CrossingPlanesMultiHead
+from custom_envs.crossing_planes_stupid import Cross_env
 register(
             id="crossing_planes",
             entry_point="custom_envs.crossing_planes:Cross_env",
@@ -28,6 +29,10 @@ register(
 register(
             id="crossing_planes_multiHead",
             entry_point="custom_envs.crossing_planes_multiHead:CrossingPlanesMultiHead",
+        )
+register(
+            id="crossing_planes_stupid",
+            entry_point="custom_envs.crossing_planes_stupid:Cross_env",
         )
     
 try:

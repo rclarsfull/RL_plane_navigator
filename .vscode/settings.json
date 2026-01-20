@@ -1,0 +1,17 @@
+{ 
+  "files.exclude": {
+    "logs/**": true,
+    "**/*.log": true,
+    "**/tensorboard/**": true
+  },
+  "files.watcherExclude": {
+    "logs/**": true,
+    "**/tensorboard/**": true,
+    "**/.pytest_cache/**": true,
+    "**/__pycache__/**": true
+  },
+  "search.exclude": {
+    "logs/**": true,
+    "**/tensorboard/**": true
+  }
+}

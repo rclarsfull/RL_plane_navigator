@@ -1,6 +1,6 @@
 crossing_planes:
   policy: "MlpLstmPolicy"
-  n_timesteps: !!float 2e6
+  n_timesteps: !!float 10e6
   n_envs: 6                                      
   gamma: 0.96
   normalize: "dict(norm_obs=True, norm_reward=True)"

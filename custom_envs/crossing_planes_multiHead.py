@@ -51,12 +51,10 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
 
         if render_mode is not None:
             assert render_mode in self.metadata["render_modes"], f"Invalid render_mode {render_mode}"
-        
-        self.step_limit = int(TIME_LIMIT / AGENT_INTERACTION_TIME)
-        self.resets_counter = 0
 
-        self.steps = 0
+        
         self.actions_noop_count = 0
+        self.actions_direct_count = 0
         self.actions_steer_count = 0
         self.last_continuous_action = 0.0
         
@@ -81,30 +79,34 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
             SNAP = 1
             STEER = 2
         self.ActionType = ActionType
+        
+    def _get_info(self): 
+        return {**super()._get_info(),
+        'actions_noop': int(self.actions_noop_count),
+        'actions_direct': int(self.actions_direct_count),
+        'actions_steer': int(self.actions_steer_count),
+        'last_continuous_action': float(self.last_continuous_action),
+        }
+        
+    def reset(self, seed=None, options=None):
+        self.actions_noop_count = 0
+        self.actions_direct_count = 0
+        self.actions_steer_count = 0
+
+        return super().reset(seed, options)
     
     def step(self, action):
-        """Wrapper - uses base class implementation"""
         aktiv_agent = self.all_agents.get_active_agent()
         self._set_action(action, aktiv_agent)
         return BaseCrossingEnv._step(self, action)
     
     def _gen_aircraft(self, num_episodes):
-        """Wrapper method that calls base class implementation
-
-        Accepts `num_episodes` because `BaseCrossingEnv.reset` calls
-        `self._gen_aircraft(self.num_episodes)`.
-        """
         return BaseCrossingEnv._gen_aircraft(self, num_episodes)
 
     def _get_observation(self, agent: Optional[Agent] = None) -> np.ndarray:
-        """Wrapper - uses base class implementation"""
         return BaseCrossingEnv._get_observation(self, agent)
-
-    def reset(self, seed=None, options=None):
-        return BaseCrossingEnv.reset(self, seed=seed, options=options)
     
     def _get_reward(self) -> float:
-        """Wrapper - uses base class implementation"""
         return BaseCrossingEnv._get_reward(self)
 
     def _set_action(self, action, agent: Agent) -> None:
@@ -181,10 +183,7 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
         agent.last_action = 1
         if is_active_agent:
             if action_type == ActionType.SNAP:
-                # optional separater Counter für Snap
-                if not hasattr(self, 'actions_snap_count'):
-                    self.actions_snap_count = 0
-                self.actions_snap_count += 1
+                self.actions_direct_count += 1
             elif action_type == ActionType.STEER:
                 self.actions_steer_count += 1
 
