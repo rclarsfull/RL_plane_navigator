@@ -109,13 +109,6 @@ class Masked_MultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
         self._build(lr_schedule)
         
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
-        """
-        Forward pass in all the networks (actor and critic)
-        :param obs: Observation
-        :param deterministic: Whether to sample or use deterministic actions
-        :return: action, value and log probability of the action
-        """
-        # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
             latent_pi, latent_vf = self.mlp_extractor(features)
@@ -123,36 +116,39 @@ class Masked_MultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
             pi_features, vf_features = features
             latent_pi = self.mlp_extractor.forward_actor(pi_features)
             latent_vf = self.mlp_extractor.forward_critic(vf_features)
-        # Evaluate the values for the given observations
+            
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
-        log_prob = distribution.log_prob(actions)
         
-        assert(isinstance(distribution, Masked_MultiOutputDistribution), "This should be a Masked Distribution")
-        type_action = actions[:, 0]
-        steer_action = actions[:, 1]
-        mask = (type_action == STEER_INDEX).bool()
+        # Calculate masked log prob
+        assert(isinstance(distribution, Masked_MultiOutputDistribution))
         
+        # Split actions
+        split_actions = th.split(actions, distribution.action_dims, dim=1)
+        
+        act_type = split_actions[0].squeeze(-1)
+        
+        # Get all log probs
         stack_log_prob = distribution.stack_log_prob(actions)
-        action_type_log_prob = stack_log_prob[:,0]
-        #steer_log_prob = th.where(mask, stack_log_prob[:,1], stack_log_prob[:,1].detach())
-        steer_log_prob = th.where(mask, stack_log_prob[:,1], th.zeros_like(stack_log_prob[:,1]))
-        masked_log_prob = action_type_log_prob + steer_log_prob
+        lp_type = stack_log_prob[:, 0]
+        lp_steer = stack_log_prob[:, 1]
         
+        # Define masks
+        mask_steer = (act_type.round().long() == STEER_INDEX)
+        
+        # Apply masks
+        masked_lp_steer = th.where(mask_steer, lp_steer, th.zeros_like(lp_steer))
+        
+        # Sum up valid log probs
+        masked_log_prob = lp_type + masked_lp_steer
+        
+        # Reshape actions
         actions = actions.reshape((-1, *get_action_shape(self.action_space)))
+        
         return actions, values, masked_log_prob
     
     def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
-        """
-        Evaluate actions according to the current policy,
-        given the observations.
-        :param obs:
-        :param actions:
-        :return: estimated value, log likelihood of taking those actions
-            and entropy of the action distribution.
-        """
-        # Preprocess the observation if needed
         features = self.extract_features(obs)
         if self.share_features_extractor:
             latent_pi, latent_vf = self.mlp_extractor(features)
@@ -163,32 +159,39 @@ class Masked_MultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
             
         distribution = self._get_action_dist_from_latent(latent_pi)
         values = self.value_net(latent_vf)
-        assert(isinstance(distribution, Masked_MultiOutputDistribution), "This should be a Masked Distribution")
-        type_action = actions[:, 0]
-        steer_action = actions[:, 1]
-        mask = (type_action == STEER_INDEX).bool()
+        assert(isinstance(distribution, Masked_MultiOutputDistribution))
+
+        # Split actions
+        split_actions = th.split(actions, distribution.action_dims, dim=1)
         
+        act_type = split_actions[0].squeeze(-1)
+        
+        # Log Probs
         stack_log_prob = distribution.stack_log_prob(actions)
-        action_type_log_prob = stack_log_prob[:,0]
-        #steer_log_prob = th.where(mask, stack_log_prob[:,1], stack_log_prob[:,1].detach())
-        steer_log_prob = th.where(mask, stack_log_prob[:,1], th.zeros_like(stack_log_prob[:,1]))  #Das macht das Training Instabiel
-        masked_log_prob = action_type_log_prob + steer_log_prob
+        lp_type = stack_log_prob[:, 0]
+        lp_steer = stack_log_prob[:, 1]
+        
+        # Masks
+        mask_steer = (act_type.round().long() == STEER_INDEX)
+        
+        # Masked Log Probs
+        masked_lp_steer = th.where(mask_steer, lp_steer, th.zeros_like(lp_steer))
+        
+        masked_log_prob = lp_type + masked_lp_steer
+        
+        
+        stack_entropy = distribution.stack_entropy()
+        ent_type = stack_entropy[:, 0]
+        ent_steer = stack_entropy[:, 1]
         
         with th.no_grad():
             type_probs = distribution.distribution[0].distribution.probs
             p_steer = type_probs[:, STEER_INDEX]
         
-        #Die unveränderte einfache addition könnte für ein biast richtung nicht steer sorgen da der 
-        stack_entropy = distribution.stack_entropy()
-        action_type_entropy = stack_entropy[:,0]
-        steer_entropy = stack_entropy[:,1] #th.where(mask, stack_entropy[:,1], stack_entropy[:,1].detach())
-        #steer_entropy = th.where(mask, stack_entropy[:,1], th.zeros_like(stack_entropy[:,1])) #Das erzeugt indirekt ein biast , das die Entropie sinkt wenn der STEER Zweig nicht genutzt wird. Was dazu führt dass die Polecy öffter Steert.
-        
-        #masked_entropy = action_type_entropy + steer_entropy
-        masked_entropy = action_type_entropy + p_steer * steer_entropy # auch bias für hohe P steer:  run 10 und 9
-        #bias_weight = 0.1 noch nicht getestet könnte bias reduzieren
-        #masked_entropy = masked_entropy - (bias_weight * p_steer)
-        
+        masked_ent_steer = p_steer * ent_steer
+
+        masked_entropy = ent_type + masked_ent_steer
+    
         return values, masked_log_prob, masked_entropy
    
     

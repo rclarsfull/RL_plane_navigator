@@ -37,6 +37,7 @@ essential_fields = [
     "last_timestep",
     "last_eval_mean",
     "last_eval_median",
+    "mean_eval_mean",
     "best_eval_mean",
     "num_evals",
     "last_success_rate",
@@ -89,6 +90,7 @@ def load_npz_metrics(npz_path: Path) -> dict[str, Any]:
         "last_timestep": -1,
         "last_eval_mean": np.nan,
         "last_eval_median": np.nan,
+        "mean_eval_mean": np.nan,
         "best_eval_mean": np.nan,
         "num_evals": 0,
         "last_success_rate": "",
@@ -104,6 +106,7 @@ def load_npz_metrics(npz_path: Path) -> dict[str, Any]:
             mean_per_eval = res_arr.mean(axis=1)
             median_per_eval = np.median(res_arr, axis=1)
             metrics["num_evals"] = int(mean_per_eval.shape[0])
+            metrics["mean_eval_mean"] = float(mean_per_eval.mean())
             metrics["last_eval_mean"] = float(mean_per_eval[-1])
             metrics["last_eval_median"] = float(median_per_eval[-1])
             metrics["best_eval_mean"] = float(mean_per_eval.max())

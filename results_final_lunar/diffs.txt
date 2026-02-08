@@ -1,0 +1,17 @@
+-- [Analysis] Metric: last_eval_mean ---
+ppo: IQM CI = (np.float64(264.30876824265624), np.float64(274.22872758541666), np.float64(277.15310333114576))
+masked_hybrid_ppo: IQM CI = (np.float64(282.45930022015625), np.float64(283.4980799260416), np.float64(284.5352300758854))
+  Diff IQM (masked_hybrid_ppo - ppo) CI = (np.float64(5.224795469375039), np.float64(9.240633569791726), np.float64(19.412738774010467))
+multioutputppo: IQM CI = (np.float64(266.87313710302084), np.float64(275.0275089885416), np.float64(279.86208413124996))
+  Diff IQM (multioutputppo - ppo) CI = (np.float64(-9.17212130614584), np.float64(0.9630775302083237), np.float64(12.51343611203124))
+masked_hybrid_ppo_split_net: IQM CI = (np.float64(278.06519199421876), np.float64(279.8077022625), np.float64(282.22037898531255))
+  Diff IQM (masked_hybrid_ppo_split_net - ppo) CI = (np.float64(2.407810054583325), np.float64(5.710777788541634), np.float64(14.55932236843758))
+
+--- [Analysis] Metric: mean_eval_mean ---
+ppo: IQM CI = (np.float64(229.04198075037587), np.float64(231.75473957064236), np.float64(235.12436388364668))
+masked_hybrid_ppo: IQM CI = (np.float64(130.73345339836806), np.float64(157.6557633120139), np.float64(177.859488097579))
+  Diff IQM (masked_hybrid_ppo - ppo) CI = (np.float64(-101.07205649389928), np.float64(-74.10039423567706), np.float64(-53.807339542599834))
+multioutputppo: IQM CI = (np.float64(224.90709170177433), np.float64(229.85540293515626), np.float64(235.33037243348005))
+  Diff IQM (multioutputppo - ppo) CI = (np.float64(-7.6146836804782545), np.float64(-2.0277151982638912), np.float64(4.378988537726588))
+masked_hybrid_ppo_split_net: IQM CI = (np.float64(90.84860990131945), np.float64(113.48170265694445), np.float64(142.64231924118656))
+  Diff IQM (masked_hybrid_ppo_split_net - ppo) CI = (np.float64(-140.1655458956363), np.float64(-118.0428003931597), np.float64(-90.53640703927522))

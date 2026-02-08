@@ -1224,8 +1224,8 @@ class BaseCrossingEnv:
             parser_path: Path to exercises.json for parser scenario
         """
         # Configure scenario parameters here
-        n_agents = random.randint(2, 6)          # Planned agents per episode
-        n_random_agents = random.randint(1, 3)   # Random intruder agents
+        n_agents = random.randint(2, 7)          # Planned agents per episode
+        n_random_agents = random.randint(1, 4)   # Random intruder agents
         
         logger.debug(f"Episode #{num_episodes}: Spawning {n_agents} planned agents + {n_random_agents} random agents")
         

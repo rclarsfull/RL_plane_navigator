@@ -1,9 +1,4 @@
 { 
-  "files.exclude": {
-    "logs/**": true,
-    "**/*.log": true,
-    "**/tensorboard/**": true
-  },
   "files.watcherExclude": {
     "logs/**": true,
     "**/tensorboard/**": true,

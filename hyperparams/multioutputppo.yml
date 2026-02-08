@@ -17,15 +17,16 @@ crossing_planes:
                           vf=[256, 256]    
                         )
                       )"
-          
 
 crossing_planes_multiHead:
   policy: "MultiOutputPolicy"
-  n_timesteps: !!float 1e6
-  n_envs: 6                                      
+  n_timesteps: !!float 6e6
+  n_envs: 8                                      
   gamma: 0.96
-  learning_rate: lin_1e-4
-  #ent_coef: 0.001
+  #learning_rate: lin_1e-4
+  learning_rate: !!float 9e-4
+  batch_size: 512
+  ent_coef: 0.001
   normalize: "dict(norm_obs=True, norm_reward=True)"
   normalize_advantage: true
   env_wrapper:
@@ -35,3 +36,17 @@ crossing_planes_multiHead:
   policy_kwargs: "dict(
                     net_arch=dict(pi=[128, 128], vf=[128, 128])
                   )"
+
+LunarLanderContinuous-v3:
+  n_envs: 16
+  n_timesteps: !!float 4e6
+  policy: 'MultiOutputPolicy'
+  n_steps: 1024
+  batch_size: 64
+  gae_lambda: 0.98
+  gamma: 0.999
+  n_epochs: 4
+  ent_coef: 0.01
+  policy_kwargs: "dict(
+                  net_arch=dict(pi=[64, 64], vf=[64, 64])
+                )"

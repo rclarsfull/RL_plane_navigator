@@ -1,0 +1,18 @@
+crossing_planes_multiHead:
+  policy: "MaskedMultiOutputPolicy"
+  n_timesteps: !!float 6e6
+  n_envs: 8                                      
+  gamma: 0.96
+  learning_rate: !!float 9e-4
+  batch_size: 512
+  ent_coef: 0.001
+  normalize: "dict(norm_obs=True, norm_reward=True)"
+  normalize_advantage: true
+  env_wrapper:
+    - stable_baselines3.common.monitor.Monitor
+  callback:
+    - "custom_envs.info_logger_callback.LogAllInfoCallback"
+  policy_kwargs: "dict(
+                    net_arch=dict(pi=[], vf=[128, 128])
+                  )"
+

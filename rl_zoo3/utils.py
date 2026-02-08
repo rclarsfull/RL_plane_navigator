@@ -22,6 +22,12 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv,
 
 from sb3_plus import MultiOutputPPO
 from .masked_ppo import MaskedMultiOutputPPO
+from .masked_ppo_split_net import MaskedMultiOutputPPOSplitNet
+from .masked_hybrid_ppo import MaskedHybridPPO
+from .masked_hybrid_ppo_split_net import MaskedHybridPPO as MaskedHybridPPO_split_net
+from .masked_hybrid_ppo_split_net_full import MaskedHybridPPO as MaskedHybridPPO_split_net_full
+from .masked_hybrid_ppo_shared_split import MaskedHybridSharedPPO
+from .masked_hybrid_ppo_fully_shared import MaskedHybridFullySharedPPO
 
 # For custom activation fn
 from torch import nn as nn
@@ -43,8 +49,13 @@ ALGOS: dict[str, type[BaseAlgorithm]] = {
     # PLUS
     "multioutputppo": MultiOutputPPO,
     # Custom
-    "masked_ppo": MaskedMultiOutputPPO
-}
+    "masked_ppo": MaskedMultiOutputPPO,
+    "masked_ppo_split_net": MaskedMultiOutputPPOSplitNet,
+    "masked_hybrid_ppo": MaskedHybridPPO,
+    "masked_hybrid_ppo_split_net": MaskedHybridPPO_split_net,
+    "masked_hybrid_ppo_split_net_full": MaskedHybridPPO_split_net_full,
+    "masked_hybrid_ppo_shared_split": MaskedHybridSharedPPO,
+    "masked_hybrid_ppo_fully_shared": MaskedHybridFullySharedPPO,}
 
 
 def flatten_dict_observations(env: gym.Env) -> gym.Env:

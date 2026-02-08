@@ -2,15 +2,13 @@
 
 set -euo pipefail
 
-# Seeds and algos to test
-SEEDS=(6661 13371 421 20241 991 221 333 444 555 323 312)
-ALGOS=(multioutputppo masked_ppo)
 
-# Env and logging
-ENV_ID="crossing_planes_multiHead"
+SEEDS=(66 133 42 202 7 1234 999 2021 31415 2718 1618 8675 11235 3141 16180) #66 133 42 202 7 1234 999 2021 31415 2718 1618 8675 11235 3141 16180
+ALGOS=(masked_hybrid_ppo_fully_shared masked_hybrid_ppo_split_net masked_hybrid_ppo_split_net_full masked_hybrid_ppo_shared_split) #ppo multioutputppo masked_hybrid_ppo masked_hybrid_ppo_split_net masked_hybrid_ppo_split_net_full masked_hybrid_ppo_shared_split    #multioutputppo masked_ppo masked_ppo_split_net
+
+ENV_ID="LunarLanderContinuous-v3" #crossing_planes_multiHead
 LOG_ROOT="logs"
 
-# Tunables (override via env vars when calling)
 EVAL_FREQ="${EVAL_FREQ:-50000}"
 EVAL_EPISODES="${EVAL_EPISODES:-60}"
 N_EVAL_ENVS="${N_EVAL_ENVS:-6}"
@@ -41,14 +39,6 @@ for SEED in "${SEEDS[@]}"; do
 
 done
 
-# Collect evaluations into a CSV for analysis
-echo "Collecting evaluations..."
-python scripts/collect_evals.py --logs "${LOG_ROOT}" --out results/eval_runs.csv
+#python scripts/evaluate_results.py --logs "${LOG_ROOT}" --env "${ENV_ID}" --algos "${ALGOS[@]}" --labels "PPO" "PPO with Wrapper" "Masked PPO" "Masked split_net(half) PPO " "Masked split_net(full) PPO" 
 
-# Analyze and generate profiles + plots
-echo "Analyzing results and generating plots..."
-python scripts/analyze_evals.py --results results/eval_runs.csv --env "${ENV_ID}" --algo "${ALGOS[0]}" --algo2 "${ALGOS[1]}" --B 5000
-python scripts/plot_evals.py --results results/eval_runs.csv --env "${ENV_ID}" --algos "${ALGOS[@]}"
-
-echo "Done! Plots saved to results/plots/"
-ls -lh results/plots/
+#python scripts/evaluate_results.py --logs logs --env LunarLanderContinuous-v3 --algos ppo multioutputppo masked_hybrid_ppo masked_hybrid_ppo_fully_shared masked_hybrid_ppo_split_net masked_hybrid_ppo_split_net_full masked_hybrid_ppo_shared_split  --labels "PPO" "PPO with Wrapper" "Masked PPO" "Masked PPO fully_shared" "Masked split_net(half) PPO" "Masked split_net(full) PPO" "Masked shared & split_net PPO" 

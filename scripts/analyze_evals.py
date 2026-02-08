@@ -55,6 +55,42 @@ def filter_success_rates(rows: List[dict[str, Any]], env: str | None, algo: str)
     return np.asarray(vals, dtype=float)
 
 
+def filter_scores_with_seeds(rows: List[dict[str, Any]], env: str | None, algo: str, metric: str = "last_eval_mean") -> dict[str, float]:
+    vals: dict[str, float] = {}
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        seed = r.get("seed", "").strip()
+        v = r.get(metric)
+        try:
+            val = float(v)
+            # If duplicates exist, later ones overwrite earlier ones (usually okay for collected logs)
+            if seed:
+                vals[seed] = val
+        except Exception:
+            pass
+    return vals
+
+def filter_success_rates_with_seeds(rows: List[dict[str, Any]], env: str | None, algo: str) -> dict[str, float]:
+    vals: dict[str, float] = {}
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        seed = r.get("seed", "").strip()
+        v = r.get("last_success_rate")
+        if v and v != "":
+            try:
+                val = float(v)
+                if seed:
+                    vals[seed] = val
+            except Exception:
+                pass
+    return vals
+
 def iqm(x: np.ndarray) -> float:
     if x.size == 0:
         return np.nan
@@ -77,20 +113,48 @@ def bootstrap_iqm(scores: np.ndarray, B: int = 5000) -> Tuple[float, float, floa
     return tuple(np.percentile(samples, [2.5, 50, 97.5]))
 
 
-def bootstrap_diff_iqm(a: np.ndarray, b: np.ndarray, B: int = 5000) -> Tuple[float, float, float]:
-    if a.size == 0 or b.size == 0:
+def bootstrap_diff_iqm_paired(d1: dict[str, float], d2: dict[str, float], B: int = 5000) -> Tuple[float, float, float]:
+    # Find common seeds
+    common_seeds = sorted(list(set(d1.keys()) & set(d2.keys())))
+    if len(common_seeds) == 0:
+        print("Warning: No common seeds found for paired comparison!")
         return (np.nan, np.nan, np.nan)
-    sa = np.empty(B, dtype=float)
-    sb = np.empty(B, dtype=float)
-    Ka, Kb = a.size, b.size
+    
+    # DEBUG: Zeige die tatsaechlichen Paare an, um die "Gleichheit" zu pruefen
+    print(f"\n--- Paired Runs Check (n={len(common_seeds)}) ---")
+    print(f"{'Seed':<10} | {'Algo1':<10} | {'Algo2':<10} | {'Diff':<10}")
+    print("-" * 46)
+    
+    # Pre-sort values by seed to ensure strict alignment
+    a_vals = []
+    b_vals = []
+    
+    for s in common_seeds:
+        v1 = d1[s]
+        v2 = d2[s]
+        a_vals.append(v1)
+        b_vals.append(v2)
+        print(f"{s:<10} | {v1:<10.2f} | {v2:<10.2f} | {v1-v2:<10.2f}")
+    
+    a_vals = np.array(a_vals)
+    b_vals = np.array(b_vals)
+    print("-" * 46 + "\n")
+    
+    K = len(common_seeds)
+    diffs = np.empty(B, dtype=float)
+    
+    # Paired Bootstrap: Resample indices (seeds)
+    indices = np.arange(K)
     for i in range(B):
-        ra = np.random.choice(a, size=Ka, replace=True)
-        rb = np.random.choice(b, size=Kb, replace=True)
-        sa[i] = iqm(ra)
-        sb[i] = iqm(rb)
-    diff = sa - sb
-    return tuple(np.percentile(diff, [2.5, 50, 97.5]))
-
+        # Sample K indices with replacement
+        idx = np.random.choice(indices, size=K, replace=True)
+        # Construct resampled sets
+        a_sample = a_vals[idx]
+        b_sample = b_vals[idx]
+        # Calculate diff of statistics
+        diffs[i] = iqm(a_sample) - iqm(b_sample)
+        
+    return tuple(np.percentile(diffs, [2.5, 50, 97.5]))
 
 def bootstrap_mean(values: np.ndarray, B: int = 5000) -> Tuple[float, float, float]:
     """Bootstrap confidence interval for mean (used for success rates)."""
@@ -104,20 +168,26 @@ def bootstrap_mean(values: np.ndarray, B: int = 5000) -> Tuple[float, float, flo
     return tuple(np.percentile(samples, [2.5, 50, 97.5]))
 
 
-def bootstrap_diff_mean(a: np.ndarray, b: np.ndarray, B: int = 5000) -> Tuple[float, float, float]:
-    """Bootstrap CI for difference in means."""
-    if a.size == 0 or b.size == 0:
+def bootstrap_diff_mean_paired(d1: dict[str, float], d2: dict[str, float], B: int = 5000) -> Tuple[float, float, float]:
+    common_seeds = sorted(list(set(d1.keys()) & set(d2.keys())))
+    if len(common_seeds) == 0:
         return (np.nan, np.nan, np.nan)
-    sa = np.empty(B, dtype=float)
-    sb = np.empty(B, dtype=float)
-    Ka, Kb = a.size, b.size
+        
+    a_vals = np.array([d1[s] for s in common_seeds])
+    b_vals = np.array([d2[s] for s in common_seeds])
+    
+    K = len(common_seeds)
+    diffs = np.empty(B, dtype=float)
+    
+    indices = np.arange(K)
     for i in range(B):
-        ra = np.random.choice(a, size=Ka, replace=True)
-        rb = np.random.choice(b, size=Kb, replace=True)
-        sa[i] = np.mean(ra)
-        sb[i] = np.mean(rb)
-    diff = sa - sb
-    return tuple(np.percentile(diff, [2.5, 50, 97.5]))
+        idx = np.random.choice(indices, size=K, replace=True)
+        a_sample = a_vals[idx]
+        b_sample = b_vals[idx]
+        diffs[i] = np.mean(a_sample) - np.mean(b_sample)
+        
+    return tuple(np.percentile(diffs, [2.5, 50, 97.5]))
+
 
 
 def run_score_profile(scores: np.ndarray, taus: np.ndarray) -> np.ndarray:
@@ -146,6 +216,14 @@ def write_profile_csv(out_path: Path, taus: np.ndarray, low: np.ndarray, med: np
             w.writerow([float(t), float(l), float(m), float(h)])
 
 
+def write_iqm_csv(out_path: Path, low: float, med: float, high: float, n_runs: int) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["low", "iqm", "high", "n_runs"])
+        w.writerow([float(low), float(med), float(high), int(n_runs)])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", type=Path, default=Path("results/eval_runs.csv"))
@@ -158,48 +236,90 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = read_csv(args.results)
-    s1 = filter_scores(rows, args.env, args.algo)
-    ci1 = bootstrap_iqm(s1, B=args.B)
-    print(f"{args.algo}: IQM CI [2.5,50,97.5] = {ci1}")
+    
+    metrics = ["last_eval_mean", "mean_eval_mean"]
+    for metric in metrics:
+        print(f"\n--- Analyzing metric: {metric} ---")
+        
+        # Extract data with seeds for paired analysis
+        dict_s1 = filter_scores_with_seeds(rows, args.env, args.algo, metric=metric)
+        s1 = np.array(list(dict_s1.values()))
+        
+        # Skip if no data found for this metric
+        if s1.size == 0:
+            print(f"No data found for {args.algo} with metric {metric}")
+            continue
 
-    if args.algo2:
-        s2 = filter_scores(rows, args.env, args.algo2)
-        ci2 = bootstrap_iqm(s2, B=args.B)
-        print(f"{args.algo2}: IQM CI [2.5,50,97.5] = {ci2}")
-        diff_ci = bootstrap_diff_iqm(s1, s2, B=args.B)
-        print(f"Diff IQM ({args.algo} - {args.algo2}) CI [2.5,50,97.5] = {diff_ci}")
+        ci1 = bootstrap_iqm(s1, B=args.B)
+        print(f"{args.algo}: IQM CI [2.5,50,97.5] = {ci1}")
+        
+        # Save IQM stats
+        out_iqm = args.outdir / f"iqm_stats_{args.env or 'all'}_{args.algo}_{metric}.csv"
+        write_iqm_csv(out_iqm, ci1[0], ci1[1], ci1[2], s1.size)
+        print(f"Wrote IQM stats to {out_iqm}")
 
-    # Success Rate analysis (if available)
-    sr1 = filter_success_rates(rows, args.env, args.algo)
+        s2 = np.array([])
+        if args.algo2:
+            dict_s2 = filter_scores_with_seeds(rows, args.env, args.algo2, metric=metric)
+            s2 = np.array(list(dict_s2.values()))
+            
+            if s2.size > 0:
+                ci2 = bootstrap_iqm(s2, B=args.B)
+                print(f"{args.algo2}: IQM CI [2.5,50,97.5] = {ci2}")
+                # Save IQM stats for algo2
+                out_iqm2 = args.outdir / f"iqm_stats_{args.env or 'all'}_{args.algo2}_{metric}.csv"
+                write_iqm_csv(out_iqm2, ci2[0], ci2[1], ci2[2], s2.size)
+                print(f"Wrote IQM stats to {out_iqm2}")
+                
+                # Paired Diff
+                diff_ci = bootstrap_diff_iqm_paired(dict_s1, dict_s2, B=args.B)
+                print(f"Diff IQM ({args.algo} - {args.algo2}) CI [2.5,50,97.5] = {diff_ci}")
+
+        # Performance profile for algo1
+        if s1.size > 0:
+            taus = np.linspace(np.min(s1), np.max(s1), args.profile_points)
+            low, med, high = bootstrap_profile(s1, taus, B=min(2000, args.B))
+            out_csv = args.outdir / f"perf_profile_{args.env or 'all'}_{args.algo}_{metric}.csv"
+            write_profile_csv(out_csv, taus, low, med, high)
+            print(f"Wrote performance profile CSV to {out_csv}")
+
+        # Performance profile for algo2 (if provided)
+        if args.algo2 and s2.size > 0:
+            taus = np.linspace(np.min(s2), np.max(s2), args.profile_points)
+            low, med, high = bootstrap_profile(s2, taus, B=min(2000, args.B))
+            out_csv = args.outdir / f"perf_profile_{args.env or 'all'}_{args.algo2}_{metric}.csv"
+            write_profile_csv(out_csv, taus, low, med, high)
+            print(f"Wrote performance profile CSV to {out_csv}")
+
+        # Write IQM CI to CSV
+        if s1.size > 0:
+            out_csv = args.outdir / f"iqm_ci_{args.env or 'all'}_{args.algo}_{metric}.csv"
+            write_iqm_csv(out_csv, *ci1, n_runs=s1.size)
+            print(f"Wrote IQM CI CSV to {out_csv}")
+        if s2.size > 0 and args.algo2:
+            out_csv = args.outdir / f"iqm_ci_{args.env or 'all'}_{args.algo2}_{metric}.csv"
+            write_iqm_csv(out_csv, *ci2, n_runs=s2.size)
+            print(f"Wrote IQM CI CSV to {out_csv}")
+
+    # Success Rate analysis (if available) - only done once as it's separate from score metric
+    print("\n--- Analyzing Success Rate ---")
+    dict_sr1 = filter_success_rates_with_seeds(rows, args.env, args.algo)
+    sr1 = np.array(list(dict_sr1.values()))
+    
     if sr1.size > 0:
         sr_ci1 = bootstrap_mean(sr1, B=args.B)
         print(f"{args.algo}: Success Rate CI [2.5,50,97.5] = {sr_ci1}")
     
     if args.algo2:
-        sr2 = filter_success_rates(rows, args.env, args.algo2)
+        dict_sr2 = filter_success_rates_with_seeds(rows, args.env, args.algo2)
+        sr2 = np.array(list(dict_sr2.values()))
+        
         if sr2.size > 0:
             sr_ci2 = bootstrap_mean(sr2, B=args.B)
             print(f"{args.algo2}: Success Rate CI [2.5,50,97.5] = {sr_ci2}")
         if sr1.size > 0 and sr2.size > 0:
-            sr_diff = bootstrap_diff_mean(sr1, sr2, B=args.B)
+            sr_diff = bootstrap_diff_mean_paired(dict_sr1, dict_sr2, B=args.B)
             print(f"Diff Success Rate ({args.algo} - {args.algo2}) CI [2.5,50,97.5] = {sr_diff}")
-
-    # Performance profile for algo1
-    if s1.size > 0:
-        taus = np.linspace(np.min(s1), np.max(s1), args.profile_points)
-        low, med, high = bootstrap_profile(s1, taus, B=min(2000, args.B))
-        out_csv = args.outdir / f"perf_profile_{args.env or 'all'}_{args.algo}.csv"
-        write_profile_csv(out_csv, taus, low, med, high)
-        print(f"Wrote performance profile CSV to {out_csv}")
-
-    # Performance profile for algo2 (if provided)
-    if args.algo2:
-        if s2.size > 0:
-            taus = np.linspace(np.min(s2), np.max(s2), args.profile_points)
-            low, med, high = bootstrap_profile(s2, taus, B=min(2000, args.B))
-            out_csv = args.outdir / f"perf_profile_{args.env or 'all'}_{args.algo2}.csv"
-            write_profile_csv(out_csv, taus, low, med, high)
-            print(f"Wrote performance profile CSV to {out_csv}")
 
 
 if __name__ == "__main__":
