@@ -1,8 +1,11 @@
 crossing_planes:
   policy: "MlpPolicy"
-  n_timesteps: !!float 5e6
+  n_timesteps: !!float 1e6
   n_envs: 8                                      
   gamma: 0.96
+  learning_rate: !!float 9e-4
+  batch_size: 512
+  ent_coef: 0.002
   normalize: "dict(norm_obs=True, norm_reward=True)"
   normalize_advantage: true
   env_wrapper:
