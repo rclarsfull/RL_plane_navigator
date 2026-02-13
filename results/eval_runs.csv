@@ -5,12 +5,14 @@ timestamp,env,algo,seed,run_dir,last_timestep,last_eval_mean,last_eval_median,me
 ,crossing_planes_multiHead,masked_ppo,202,logs/masked_ppo/crossing_planes_multiHead_4,6000000,240.36220851666667,160.56954050000002,206.74221048805558,264.58748978333335,120,0.9,0.9833333333333333
 ,crossing_planes_multiHead,masked_ppo,7,logs/masked_ppo/crossing_planes_multiHead_5,6000000,195.89326573333335,165.9289395,209.37897355722222,285.5506578166666,120,0.9166666666666666,0.9833333333333333
 ,crossing_planes_multiHead,masked_ppo,1234,logs/masked_ppo/crossing_planes_multiHead_6,6000000,188.3585921166667,172.9575395,211.7929366284722,328.79821604999995,120,0.9833333333333333,1.0
+,crossing_planes_multiHead,masked_ppo,999,logs/masked_ppo/crossing_planes_multiHead_7,6000000,171.45686458333333,159.22916750000002,207.20898298694445,276.79206128333334,120,0.9166666666666666,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net,66,logs/masked_ppo_split_net/crossing_planes_multiHead_1,6000000,212.87147459999997,170.2333505,210.93083463333332,290.83785723333324,120,1.0,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net,133,logs/masked_ppo_split_net/crossing_planes_multiHead_2,6000000,196.51613881666663,167.3398325,205.89568553638887,371.9267737999999,120,0.95,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net,42,logs/masked_ppo_split_net/crossing_planes_multiHead_3,6000000,194.2315754,156.7727795,212.87259744111114,303.94988136666666,120,0.9166666666666666,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net,202,logs/masked_ppo_split_net/crossing_planes_multiHead_4,6000000,208.26563376666664,169.038697,217.71228110069444,287.5167268000001,120,0.9666666666666667,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net,7,logs/masked_ppo_split_net/crossing_planes_multiHead_5,6000000,194.9315571333333,173.5753935,213.60021088722223,278.2966154333333,120,0.9666666666666667,0.9833333333333333
 ,crossing_planes_multiHead,masked_ppo_split_net,1234,logs/masked_ppo_split_net/crossing_planes_multiHead_6,6000000,171.08440295,159.7883885,206.456861,356.87879398333337,120,0.9333333333333333,1.0
+,crossing_planes_multiHead,masked_ppo_split_net,999,logs/masked_ppo_split_net/crossing_planes_multiHead_7,5300000,170.09149223333333,162.7595475,204.62357550283016,285.1409455833334,106,0.9333333333333333,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net_with_shared,66,logs/masked_ppo_split_net_with_shared/crossing_planes_multiHead_1,6000000,262.8894605833333,175.274635,207.72664123888887,286.50886844999997,120,0.9333333333333333,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net_with_shared,133,logs/masked_ppo_split_net_with_shared/crossing_planes_multiHead_2,6000000,174.44323188333334,157.1753765,206.00035217041665,293.4423983166667,120,1.0,1.0
 ,crossing_planes_multiHead,masked_ppo_split_net_with_shared,42,logs/masked_ppo_split_net_with_shared/crossing_planes_multiHead_3,6000000,216.50052078333331,158.20049749999998,212.06759286819445,287.2844283166667,120,0.9166666666666666,0.9833333333333333
@@ -23,4 +25,4 @@ timestamp,env,algo,seed,run_dir,last_timestep,last_eval_mean,last_eval_median,me
 ,crossing_planes_multiHead,multioutputppo,202,logs/multioutputppo/crossing_planes_multiHead_4,6000000,176.00897043333327,179.6892285,231.30567299583336,325.0334887333334,120,0.9666666666666667,1.0
 ,crossing_planes_multiHead,multioutputppo,7,logs/multioutputppo/crossing_planes_multiHead_5,6000000,182.10487508333335,181.59877749999998,231.56137620972223,331.59636754999997,120,0.9666666666666667,1.0
 ,crossing_planes_multiHead,multioutputppo,1234,logs/multioutputppo/crossing_planes_multiHead_6,6000000,165.77049358333338,167.99738,222.88166458652776,358.5985528833333,120,0.9,1.0
-,crossing_planes_multiHead,multioutputppo,999,logs/multioutputppo/crossing_planes_multiHead_7,2100000,180.7610873333333,164.21975600000002,212.0372902353174,298.23478198333333,42,0.95,0.9666666666666667
+,crossing_planes_multiHead,multioutputppo,999,logs/multioutputppo/crossing_planes_multiHead_7,6000000,226.7198541833333,175.6983765,222.30787008930557,306.79644559999997,120,0.9666666666666667,1.0
