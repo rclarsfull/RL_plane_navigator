@@ -5,7 +5,7 @@ crossing_planes_multiHead:
   gamma: 0.96
   learning_rate: !!float 9e-4
   batch_size: 512
-  ent_coef: 0.001
+  ent_coef: 0.002
   normalize: "dict(norm_obs=True, norm_reward=True)"
   normalize_advantage: true
   env_wrapper:

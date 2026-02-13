@@ -28,6 +28,7 @@ from .masked_hybrid_ppo_split_net import MaskedHybridPPO as MaskedHybridPPO_spli
 from .masked_hybrid_ppo_split_net_full import MaskedHybridPPO as MaskedHybridPPO_split_net_full
 from .masked_hybrid_ppo_shared_split import MaskedHybridSharedPPO
 from .masked_hybrid_ppo_fully_shared import MaskedHybridFullySharedPPO
+from .masked_ppo_split_net_with_shared import MaskedMultiOutputPPOSplitNet as MaskedMultiOutputPPOSplitNetWithShared
 
 # For custom activation fn
 from torch import nn as nn
@@ -51,6 +52,7 @@ ALGOS: dict[str, type[BaseAlgorithm]] = {
     # Custom
     "masked_ppo": MaskedMultiOutputPPO,
     "masked_ppo_split_net": MaskedMultiOutputPPOSplitNet,
+    "masked_ppo_split_net_with_shared": MaskedMultiOutputPPOSplitNetWithShared,
     "masked_hybrid_ppo": MaskedHybridPPO,
     "masked_hybrid_ppo_split_net": MaskedHybridPPO_split_net,
     "masked_hybrid_ppo_split_net_full": MaskedHybridPPO_split_net_full,

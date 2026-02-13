@@ -3,6 +3,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Type, TypeVar, Union, Tu
 
 import torch as th
 from gymnasium import spaces
+import numpy as np
 
 from sb3_plus import MultiOutputPPO
 from sb3_plus.mimo.on_policy_algorithm import MultiOutputOnPolicyAlgorithm
@@ -11,7 +12,7 @@ from sb3_plus.mimo.distributions import MultiOutputDistribution, FlattenCategori
 from stable_baselines3.common import distributions as sb3_dist
 from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, Schedule, MaybeCallback
-from sb3_plus.mimo.preprocessing import get_action_shape
+from sb3_plus.mimo.preprocessing import get_action_shape, get_net_action_dim
 
 STEER_INDEX = 2  # Index of the STEER action in the action_type discrete distribution
 MaskedSelfMultiOutputPPO = TypeVar("MaskedSelfMultiOutputPPO", bound="MaskedMultiOutputPPOSplitNet")
@@ -50,8 +51,13 @@ MaskedSelfMultiOutputPPO = TypeVar("MaskedSelfMultiOutputPPO", bound="MaskedMult
 
     
 class SplitActionNet(th.nn.Module):
-    def __init__(self, latent_dim: int, net_action_dims: List[int], action_space:  spaces.Dict, get_net_action_dim, net_arch: Union[list[int], dict[str, list[int]]] = [16, 16]):
+    def __init__(self, latent_dim: int, net_action_dims: List[int], action_space:  spaces.Dict, net_arch: Union[list[int], dict[str, list[int]]] = dict({
+            'action_type': [91, 91],
+            'steer': [91, 91],
+        })):
         super().__init__()
+        
+        print(f"Initializing SplitActionNet with net_arch: {net_arch} \nand action_space: {action_space}\n and latent_dim: {latent_dim} \n and net_action_dims: {net_action_dims}")
         
         self.action_nets = th.nn.ModuleList()
         if isinstance(net_arch, dict):
@@ -79,6 +85,8 @@ class SplitActionNet(th.nn.Module):
             for action_dim in action_space.values():
                 action_net = th.nn.Sequential(*shared_net).append(th.nn.Linear(curr_dim, get_net_action_dim(action_dim)))
                 self.action_nets.append(action_net)
+                
+        print( f"Constructed SplitActionNet with {self.action_nets} action nets." )
 
 
     def forward(self, x: th.Tensor) -> th.Tensor:
@@ -87,7 +95,7 @@ class SplitActionNet(th.nn.Module):
 class Masked_MultiOutputDistribution(MultiOutputDistribution):
     
     def proba_distribution_net(self, latent_dim: int, log_std_init: float = 0.0) -> Tuple[th.nn.Module, th.nn.Parameter]:
-        action_net = SplitActionNet(latent_dim, self._net_action_dims, self.action_space, self.get_net_action_dim)
+        action_net = SplitActionNet(latent_dim, self._net_action_dims, self.action_space)
         flatten_log_std = th.nn.Parameter(th.ones(self._net_flatten_action_dim) * log_std_init, requires_grad=True)
         return action_net, flatten_log_std
 
@@ -154,6 +162,29 @@ class Masked_MultiOutputActorCriticPolicy(MultiOutputActorCriticPolicy):
 
         self.action_dist = Masked_MultiOutputDistribution.make_proba_distribution(action_space) 
         self._build(lr_schedule)
+        
+        # --- Fix for SB3 Initialization ---
+        if isinstance(self.action_net, SplitActionNet):
+            module = self.action_net
+            
+            # 2. Initialize Action Branches
+            for branch in module.action_nets:
+                # Branches might contain hidden layers + final layer
+                layers = list(branch.children())
+                if len(layers) > 0:
+                    # Hidden layers in branch (if any)
+                    for m in layers[:-1]:
+                        if isinstance(m, th.nn.Linear):
+                            th.nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                            if m.bias is not None:
+                                m.bias.data.fill_(0.0)
+                    
+                    # Final output layer of the branch -> gain=0.01
+                    last_m = layers[-1]
+                    if isinstance(last_m, th.nn.Linear):
+                        th.nn.init.orthogonal_(last_m.weight, gain=0.01)
+                        if last_m.bias is not None:
+                            last_m.bias.data.fill_(0.0)
         
     def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         features = self.extract_features(obs)
