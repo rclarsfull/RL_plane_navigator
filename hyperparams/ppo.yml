@@ -1,6 +1,6 @@
 crossing_planes:
   policy: "MlpPolicy"
-  n_timesteps: !!float 1e6
+  n_timesteps: !!float 3e6
   n_envs: 8                                      
   gamma: 0.96
   learning_rate: !!float 9e-4
