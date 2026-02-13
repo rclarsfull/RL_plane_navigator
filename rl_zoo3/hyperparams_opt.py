@@ -52,6 +52,27 @@ def convert_onpolicy_params(sampled_params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def convert_onpolicy_params_no_policy_kwargs(sampled_params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convert PPO-like sampled params for algorithms where `policy_kwargs`
+    (e.g. `net_arch`, `activation_fn`) should not be tuned by Optuna.
+    """
+    hyperparams = sampled_params.copy()
+
+    hyperparams["gamma"] = 1 - sampled_params["one_minus_gamma"]
+    del hyperparams["one_minus_gamma"]
+
+    hyperparams["gae_lambda"] = 1 - sampled_params["one_minus_gae_lambda"]
+    del hyperparams["one_minus_gae_lambda"]
+
+    for name in ["batch_size", "n_steps"]:
+        if f"{name}_pow" in sampled_params:
+            hyperparams[name] = 2 ** sampled_params[f"{name}_pow"]
+            del hyperparams[f"{name}_pow"]
+
+    return hyperparams
+
+
 def convert_offpolicy_params(sampled_params: dict[str, Any]) -> dict[str, Any]:
     hyperparams = sampled_params.copy()
 
@@ -152,6 +173,43 @@ def sample_ppo_params(trial: optuna.Trial, n_actions: int, n_envs: int, addition
     }
 
     return convert_onpolicy_params(sampled_params)
+
+
+def sample_ppo_params_no_policy_kwargs(
+    trial: optuna.Trial, n_actions: int, n_envs: int, additional_args: dict
+) -> dict[str, Any]:
+    """
+    PPO-like sampler without architecture/activation search.
+    Useful for custom PPO variants with fixed policy implementations.
+    """
+    batch_size_pow = trial.suggest_int("batch_size_pow", 2, 10)
+    n_steps_pow = trial.suggest_int("n_steps_pow", 5, 12)
+    one_minus_gamma = trial.suggest_float("one_minus_gamma", 0.0001, 0.03, log=True)
+    one_minus_gae_lambda = trial.suggest_float("one_minus_gae_lambda", 0.0001, 0.1, log=True)
+
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 0.002, log=True)
+    ent_coef = trial.suggest_float("ent_coef", 0.00000001, 0.1, log=True)
+    clip_range = trial.suggest_categorical("clip_range", [0.1, 0.2, 0.3, 0.4])
+    n_epochs = trial.suggest_categorical("n_epochs", [1, 5, 10, 20])
+    max_grad_norm = trial.suggest_float("max_grad_norm", 0.3, 2)
+
+    trial.set_user_attr("gamma", 1 - one_minus_gamma)
+    trial.set_user_attr("n_steps", 2**n_steps_pow)
+    trial.set_user_attr("batch_size", 2**batch_size_pow)
+
+    sampled_params = {
+        "n_steps_pow": n_steps_pow,
+        "batch_size_pow": batch_size_pow,
+        "one_minus_gamma": one_minus_gamma,
+        "one_minus_gae_lambda": one_minus_gae_lambda,
+        "learning_rate": learning_rate,
+        "ent_coef": ent_coef,
+        "clip_range": clip_range,
+        "n_epochs": n_epochs,
+        "max_grad_norm": max_grad_norm,
+    }
+
+    return convert_onpolicy_params_no_policy_kwargs(sampled_params)
 
 
 def sample_ppo_lstm_params(trial: optuna.Trial, n_actions: int, n_envs: int, additional_args: dict) -> dict[str, Any]:
@@ -497,6 +555,15 @@ HYPERPARAMS_SAMPLER = {
     "qrdqn": sample_qrdqn_params,
     "ppo": sample_ppo_params,
     "ppo_lstm": sample_ppo_lstm_params,
+    "multioutputppo": sample_ppo_params_no_policy_kwargs,
+    "masked_ppo": sample_ppo_params_no_policy_kwargs,
+    "masked_ppo_split_net": sample_ppo_params_no_policy_kwargs,
+    "masked_ppo_split_net_with_shared": sample_ppo_params_no_policy_kwargs,
+    "masked_hybrid_ppo": sample_ppo_params_no_policy_kwargs,
+    "masked_hybrid_ppo_split_net": sample_ppo_params_no_policy_kwargs,
+    "masked_hybrid_ppo_split_net_full": sample_ppo_params_no_policy_kwargs,
+    "masked_hybrid_ppo_shared_split": sample_ppo_params_no_policy_kwargs,
+    "masked_hybrid_ppo_fully_shared": sample_ppo_params_no_policy_kwargs,
     "sac": sample_sac_params,
     "tqc": sample_tqc_params,
     "td3": sample_td3_params,
@@ -512,6 +579,15 @@ HYPERPARAMS_CONVERTER = {
     "qrdqn": convert_offpolicy_params,
     "ppo": convert_onpolicy_params,
     "ppo_lstm": convert_onpolicy_params,
+    "multioutputppo": convert_onpolicy_params_no_policy_kwargs,
+    "masked_ppo": convert_onpolicy_params_no_policy_kwargs,
+    "masked_ppo_split_net": convert_onpolicy_params_no_policy_kwargs,
+    "masked_ppo_split_net_with_shared": convert_onpolicy_params_no_policy_kwargs,
+    "masked_hybrid_ppo": convert_onpolicy_params_no_policy_kwargs,
+    "masked_hybrid_ppo_split_net": convert_onpolicy_params_no_policy_kwargs,
+    "masked_hybrid_ppo_split_net_full": convert_onpolicy_params_no_policy_kwargs,
+    "masked_hybrid_ppo_shared_split": convert_onpolicy_params_no_policy_kwargs,
+    "masked_hybrid_ppo_fully_shared": convert_onpolicy_params_no_policy_kwargs,
     "sac": convert_offpolicy_params,
     "tqc": convert_offpolicy_params,
     "td3": convert_offpolicy_params,
