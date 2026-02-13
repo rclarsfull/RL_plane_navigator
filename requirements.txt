@@ -19,3 +19,4 @@ bluesky_gym
 sbx-rl
 tensorboard
 optuna-dashboard
+git+https://github.com/adysonmaia/sb3-plus#egg=sb3-plus
