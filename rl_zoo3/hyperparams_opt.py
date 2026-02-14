@@ -30,6 +30,7 @@ def convert_onpolicy_params(sampled_params: dict[str, Any]) -> dict[str, Any]:
     net_arch = {
         "tiny": dict(pi=[64], vf=[64]),
         "small": dict(pi=[64, 64], vf=[64, 64]),
+        "custom_128": dict(pi=[128, 128], vf=[128, 128]),
         "medium": dict(pi=[256, 256], vf=[256, 256]),
     }[net_arch]
 
@@ -146,7 +147,7 @@ def sample_ppo_params(trial: optuna.Trial, n_actions: int, n_envs: int, addition
     n_epochs = trial.suggest_categorical("n_epochs", [1, 5, 10, 20])
 
     max_grad_norm = trial.suggest_float("max_grad_norm", 0.3, 2)
-    net_arch = trial.suggest_categorical("net_arch", ["tiny", "small", "medium"])
+    net_arch = trial.suggest_categorical("net_arch", ["tiny", "small", "custom_128", "medium"])
     activation_fn = trial.suggest_categorical("activation_fn", ["tanh", "relu"])
     # lr_schedule = "constant"
     # Uncomment to enable learning rate schedule
