@@ -1,5 +1,5 @@
 #/bin/bash
-python train.py  \
+  python train.py  \
   --algo ppo \
   --verbose 1 \
   --env crossing_planes \
@@ -11,4 +11,5 @@ python train.py  \
   --n-evaluations 50 \
   --storage sqlite:///logs/mergeenv_optuna.db \
   -f logs/ \
-  --study-name StudyPPO \
+  --study-name ppo \
+  --n-jobs 8
