@@ -664,16 +664,27 @@ class BaseCrossingEnv:
     
     def _get_reward(self):
         """
-        DENSE REWARD STRUCTURE - 6 KOMPONENTEN!
-        
-        Alle Komponenten geben Feedback basierend auf Agent-Verhalten:
-        
-        DENSE COMPONENTS (jeden Step):
-        1. drift_reward: [0, 0.6] (abhängig vom Heading Error zu Ziel) ← JEDEN STEP!
-        2. action_age_reward: [0, 0.1] (abhängig von NOOP-Dauer) ← JEDEN STEP (wenn NOOP)!
-        3. collision_avoidance_reward: [0, 0.5] (abhängig von Abstand zu CPA) ← NUR bei Gefahr!
-        4. proximity_reward: [0, ?] (abhängig von Nähe zum Waypoint + Anzahl gesammelter Waypoints) ← JEDEN STEP!
-        5. noop_reward: [NOOP_REWARD] (flache Belohnung für jede NOOP-Aktion) ← JEDEN STEP (wenn NOOP)!
+          DENSE REWARD STRUCTURE - 6 KOMPONENTEN
+
+          Implementierte Reward-Komponenten pro Step:
+
+          1) drift_reward
+              Positiver Reward für kleine Kursabweichung zum Ziel-Heading.
+
+          2) action_age_reward
+              Positiver Reward nur bei NOOP, skaliert mit der Dauer seit der letzten aktiven Aktion.
+
+          3) collision_avoidance_reward
+              Negativer Reward bei realer Konfliktlage (CPA-basiert, zeitlich gewichtet).
+
+          4) collision_penalty
+              Zusätzliche harte Strafe, wenn die letzte Aktion Intrusions verursacht hat.
+
+          5) noop_reward
+              Flacher Reward nur bei NOOP.
+
+          6) waypoint_bonus
+              Positiver Bonus pro in diesem Step erreichtem Waypoint.
         
         """
         agent = self.all_agents.get_active_agent()
