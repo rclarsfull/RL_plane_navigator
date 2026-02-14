@@ -147,7 +147,9 @@ def sample_ppo_params(trial: optuna.Trial, n_actions: int, n_envs: int, addition
     n_epochs = trial.suggest_categorical("n_epochs", [1, 5, 10, 20])
 
     max_grad_norm = trial.suggest_float("max_grad_norm", 0.3, 2)
-    net_arch = trial.suggest_categorical("net_arch", ["tiny", "small", "custom_128", "medium"])
+    # Keep a separate Optuna parameter name to stay compatible with existing studies
+    # that already used "net_arch" with a smaller categorical choice set.
+    net_arch = trial.suggest_categorical("net_arch_v2", ["tiny", "small", "custom_128", "medium"])
     activation_fn = trial.suggest_categorical("activation_fn", ["tanh", "relu"])
     # lr_schedule = "constant"
     # Uncomment to enable learning rate schedule
