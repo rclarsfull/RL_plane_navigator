@@ -100,6 +100,28 @@ class Simulator(simulator_interface.SimulatorInterface):
 
     @time_function
     def traf_set_heading(self, id: str, new_heading: float):
+        # Validate heading is a valid numeric value before sending to BlueSky
+        if new_heading is None:
+            logger.error(f"Cannot set heading for {id}: heading is None. Skipping command.")
+            return
+        
+        # Convert to scalar if it's an array
+        if isinstance(new_heading, (np.ndarray, list, tuple)):
+            new_heading = float(np.asarray(new_heading).reshape(-1)[0])
+        
+        # Ensure it's a float
+        try:
+            new_heading = float(new_heading)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Cannot convert heading to float for {id}: {new_heading} ({type(new_heading)}). Error: {e}")
+            return
+        
+        # Check for NaN/Inf
+        if not np.isfinite(new_heading):
+            logger.error(f"Invalid heading for {id}: {new_heading}. Skipping command.")
+            return
+        
+        # Send validated heading to BlueSky
         bs.stack.stack(f"HDG {id} {new_heading}")
 
     @time_function

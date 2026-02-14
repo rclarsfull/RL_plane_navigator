@@ -11,4 +11,4 @@ python train.py  \
   --n-evaluations 50 \
   --storage sqlite:///logs/mergeenv_optuna.db \
   -f logs/ \
-  --study-name Study1 \
+  --study-name StudyPPO \

@@ -147,6 +147,12 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
             steer_scalar = float(np.asarray(raw_steer).reshape(-1)[0])
         else:
             steer_scalar = float(raw_steer)
+        
+        # Validate steer_scalar is finite before clipping
+        if not np.isfinite(steer_scalar):
+            logger.warning(f"Invalid steer value for agent {agent.id}: {steer_scalar}. Setting to 0.0")
+            steer_scalar = 0.0
+        
         steer_scalar = float(np.clip(steer_scalar, -1.0, 1.0))
 
         is_active_agent = (agent == self.all_agents.get_active_agent())
@@ -209,6 +215,10 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
             agent.last_action_type = 'snap'
         elif action_type == ActionType.STEER:  # STEER (continuous)
             rel_deg = steer_scalar * 180.0
+            # Additional safety check after multiplication
+            if not np.isfinite(rel_deg):
+                logger.warning(f"Invalid rel_deg after multiplication for agent {agent.id}: {rel_deg} (steer={steer_scalar}). Using 0.0")
+                rel_deg = 0.0
             heading_new = bound_angle_positive_negative_180(current_heading + rel_deg)
             continuous_steering = float(np.clip(rel_deg / 180.0, -1.0, 1.0))
             agent.last_action_type = 'steer'
