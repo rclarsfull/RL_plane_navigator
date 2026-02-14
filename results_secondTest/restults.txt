@@ -1,0 +1,65 @@
+Collecting evaluations from logs...
+Processed masked_ppo/crossing_planes_multiHead (seed=66): last_mean=250.55
+Processed masked_ppo/crossing_planes_multiHead (seed=133): last_mean=174.76
+Processed masked_ppo/crossing_planes_multiHead (seed=42): last_mean=204.80
+Processed masked_ppo/crossing_planes_multiHead (seed=202): last_mean=240.36
+Processed masked_ppo/crossing_planes_multiHead (seed=7): last_mean=195.89
+Processed masked_ppo/crossing_planes_multiHead (seed=1234): last_mean=188.36
+Processed masked_ppo/crossing_planes_multiHead (seed=999): last_mean=171.46
+Processed masked_ppo/crossing_planes_multiHead (seed=2021): last_mean=198.93
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=66): last_mean=212.87
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=133): last_mean=196.52
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=42): last_mean=194.23
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=202): last_mean=208.27
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=7): last_mean=194.93
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=1234): last_mean=171.08
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=999): last_mean=273.22
+Processed masked_ppo_split_net/crossing_planes_multiHead (seed=2021): last_mean=206.56
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=66): last_mean=262.89
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=133): last_mean=174.44
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=42): last_mean=216.50
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=202): last_mean=233.12
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=7): last_mean=176.52
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=1234): last_mean=228.05
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=999): last_mean=237.21
+Processed masked_ppo_split_net_with_shared/crossing_planes_multiHead (seed=2021): last_mean=189.60
+Processed multioutputppo/crossing_planes_multiHead (seed=66): last_mean=215.93
+Processed multioutputppo/crossing_planes_multiHead (seed=133): last_mean=192.44
+Processed multioutputppo/crossing_planes_multiHead (seed=42): last_mean=218.39
+Processed multioutputppo/crossing_planes_multiHead (seed=202): last_mean=176.01
+Processed multioutputppo/crossing_planes_multiHead (seed=7): last_mean=182.10
+Processed multioutputppo/crossing_planes_multiHead (seed=1234): last_mean=165.77
+Processed multioutputppo/crossing_planes_multiHead (seed=999): last_mean=226.72
+Processed multioutputppo/crossing_planes_multiHead (seed=2021): last_mean=234.60
+Saved 32 rows to results/eval_runs.csv
+
+--- [Analysis] Metric: last_eval_mean ---
+multioutputppo: IQM CI = (np.float64(179.05692275833331), np.float64(202.21471417916663), np.float64(224.0218161833333))
+masked_ppo: IQM CI = (np.float64(180.73452997083336), np.float64(197.41360187500004), np.float64(227.67189855))
+  Diff IQM (masked_ppo - multioutputppo) CI = (np.float64(-35.011547713124926), np.float64(-4.3680264916666545), np.float64(33.663855814375026))
+masked_ppo_split_net: IQM CI = (np.float64(191.5272180625), np.float64(201.5836287520833), np.float64(225.23072561666666))
+  Diff IQM (masked_ppo_split_net - multioutputppo) CI = (np.float64(-19.710954733333324), np.float64(0.35510702500002367), np.float64(21.904464441666676))
+masked_ppo_split_net_with_shared: IQM CI = (np.float64(186.32152542416668), np.float64(216.81674054583334), np.float64(239.04731389166668))
+  Diff IQM (masked_ppo_split_net_with_shared - multioutputppo) CI = (np.float64(-19.93904247916663), np.float64(13.04740963333336), np.float64(48.63989542968751))
+
+--- [Analysis] Metric: mean_eval_mean ---
+multioutputppo: IQM CI = (np.float64(221.471195909375), np.float64(224.8442180645486), np.float64(229.82271699597223))
+masked_ppo: IQM CI = (np.float64(207.97736812135417), np.float64(209.86043809878473), np.float64(211.30951481711804))
+  Diff IQM (masked_ppo - multioutputppo) CI = (np.float64(-20.77904201205469), np.float64(-15.058802619218767), np.float64(-10.559227530000015))
+masked_ppo_split_net: IQM CI = (np.float64(206.31656713409723), np.float64(210.5883984248611), np.float64(214.02798801788197))
+  Diff IQM (masked_ppo_split_net - multioutputppo) CI = (np.float64(-17.062156539340265), np.float64(-14.666869736319427), np.float64(-11.300814057222226))
+masked_ppo_split_net_with_shared: IQM CI = (np.float64(207.52813791524306), np.float64(209.4770056461015), np.float64(211.5432031920486))
+  Diff IQM (masked_ppo_split_net_with_shared - multioutputppo) CI = (np.float64(-19.673914578541684), np.float64(-15.22641839115542), np.float64(-13.294654979454037))
+
+--- [Analysis] Success Rates ---
+multioutputppo: Success Rate CI = (np.float64(0.93125), np.float64(0.95625), np.float64(0.9770833333333334))
+masked_ppo: Success Rate CI = (np.float64(0.8916666666666666), np.float64(0.9208333333333334), np.float64(0.9479166666666666))
+  Diff Success Rate (masked_ppo - multioutputppo) CI = (np.float64(-0.07916666666666672), np.float64(-0.03541666666666676), np.float64(0.014583333333333282))
+masked_ppo_split_net: Success Rate CI = (np.float64(0.94375), np.float64(0.9624999999999999), np.float64(0.9791666666666667))
+  Diff Success Rate (masked_ppo_split_net - multioutputppo) CI = (np.float64(-0.018750000000000044), np.float64(0.006249999999999978), np.float64(0.027083333333333348))
+masked_ppo_split_net_with_shared: Success Rate CI = (np.float64(0.8958333333333333), np.float64(0.9229166666666666), np.float64(0.9520833333333333))
+  Diff Success Rate (masked_ppo_split_net_with_shared - multioutputppo) CI = (np.float64(-0.07916666666666661), np.float64(-0.033333333333333326), np.float64(0.012499999999999956))
+Saved plot: results/plots/iqm_ci_crossing_planes_multiHead_last_eval_mean.png
+Saved plot: results/plots/perf_profile_crossing_planes_multiHead_last_eval_mean.png
+Saved plot: results/plots/iqm_ci_crossing_planes_multiHead_mean_eval_mean.png
+Saved plot: results/plots/perf_profile_crossing_planes_multiHead_mean_eval_mean.png
