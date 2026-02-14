@@ -67,6 +67,17 @@ class Simulator(simulator_interface.SimulatorInterface):
     @time_function
     def traf_create(self, acid: str, actype: str, acspd: float,
                     aclat: float, aclon: float, achdg: float, acalt: int):
+        # Validate heading before creating aircraft
+        try:
+            achdg = float(achdg)
+        except (ValueError, TypeError) as e:
+            logger.error(f"CRE {acid}: Cannot convert heading to float: {achdg}. Error: {e}. SKIPPING.")
+            return
+        
+        if not np.isfinite(achdg):
+            logger.error(f"CRE {acid}: Invalid heading (NaN/Inf): {achdg}. SKIPPING.")
+            return
+        
         cas_kts = acspd * 1.94384
         bs.stack.stack(f"CRE {acid} {actype} {aclat} {aclon} {achdg} FL{acalt} {cas_kts}")
         bs.stack.stack(f'RESOOFF {acid}')
@@ -100,28 +111,21 @@ class Simulator(simulator_interface.SimulatorInterface):
 
     @time_function
     def traf_set_heading(self, id: str, new_heading: float):
-        # Validate heading is a valid numeric value before sending to BlueSky
-        if new_heading is None:
-            logger.error(f"Cannot set heading for {id}: heading is None. Skipping command.")
-            return
-        
-        # Convert to scalar if it's an array
-        if isinstance(new_heading, (np.ndarray, list, tuple)):
-            new_heading = float(np.asarray(new_heading).reshape(-1)[0])
-        
-        # Ensure it's a float
+        # Convert to Python float and validate
         try:
-            new_heading = float(new_heading)
-        except (ValueError, TypeError) as e:
-            logger.error(f"Cannot convert heading to float for {id}: {new_heading} ({type(new_heading)}). Error: {e}")
+            if isinstance(new_heading, (np.ndarray, list, tuple)):
+                new_heading = float(np.asarray(new_heading).flat[0])
+            else:
+                new_heading = float(new_heading)
+        except (ValueError, TypeError, IndexError) as e:
+            logger.error(f"HDG {id}: Cannot convert to float: {new_heading} ({type(new_heading)}). Error: {e}. SKIPPING.")
             return
         
-        # Check for NaN/Inf
+        # Check if finite
         if not np.isfinite(new_heading):
-            logger.error(f"Invalid heading for {id}: {new_heading}. Skipping command.")
+            logger.error(f"HDG {id}: Invalid heading (NaN/Inf): {new_heading}. SKIPPING.")
             return
         
-        # Send validated heading to BlueSky
         bs.stack.stack(f"HDG {id} {new_heading}")
 
     @time_function
