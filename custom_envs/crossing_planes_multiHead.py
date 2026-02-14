@@ -188,13 +188,24 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
                 self.actions_steer_count += 1
 
         _, _, current_heading, _ = self.sim.traf_get_state(agent.id)
+        if not np.isfinite(current_heading):
+            logger.warning(f"Invalid current heading for agent {agent.id}: {current_heading}. Falling back to 0.0°")
+            current_heading = 0.0
 
         if action_type == ActionType.SNAP:  # SNAP
             waypoint = self.getNextWaypoint(agent)
             target_dir, _ = self.sim.geo_calculate_direction_and_distance(agent.ac_lat, agent.ac_lon, waypoint.lat, waypoint.lon)
-            heading_new = bound_angle_positive_negative_180(target_dir)
-            rel_delta = bound_angle_positive_negative_180(heading_new - current_heading)
-            continuous_steering = float(np.clip(rel_delta / 180.0, -1.0, 1.0))
+            if np.isfinite(target_dir):
+                heading_new = bound_angle_positive_negative_180(target_dir)
+                rel_delta = bound_angle_positive_negative_180(heading_new - current_heading)
+                continuous_steering = float(np.clip(rel_delta / 180.0, -1.0, 1.0))
+            else:
+                logger.warning(
+                    f"Invalid target direction for agent {agent.id} (lat/lon={agent.ac_lat},{agent.ac_lon} -> "
+                    f"{waypoint.lat},{waypoint.lon}). Keeping current heading {current_heading}."
+                )
+                heading_new = current_heading
+                continuous_steering = 0.0
             agent.last_action_type = 'snap'
         elif action_type == ActionType.STEER:  # STEER (continuous)
             rel_deg = steer_scalar * 180.0
@@ -206,6 +217,15 @@ class CrossingPlanesMultiHead(BaseCrossingEnv, gym.Env):
             heading_new = current_heading
             continuous_steering = 0.0
             agent.last_action_type = 'noop'
+
+        if not np.isfinite(heading_new):
+            logger.warning(
+                f"Computed invalid heading for agent {agent.id}: heading_new={heading_new}, "
+                f"current_heading={current_heading}, action_type={int(action_type)}, steer={steer_scalar}. "
+                "Using current heading instead."
+            )
+            heading_new = float(current_heading)
+            continuous_steering = 0.0
 
         # Setze Heading im Simulator
         self.sim.traf_set_heading(agent.id, heading_new)
