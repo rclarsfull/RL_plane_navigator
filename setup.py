@@ -18,7 +18,7 @@ install_requires = [
     "sb3_contrib>=2.7.0,<3.0",
     "sb3-plus @ git+https://github.com/adysonmaia/sb3-plus.git",
     "setuptools>=68",
-    "gymnasium>=0.29.1,<1.3.0",
+    "gymnasium==1.2.3",
     "huggingface_sb3>=3.0,<4.0",
     "tqdm",
     "rich",
@@ -28,10 +28,17 @@ install_requires = [
     "shimmy~=2.0",
     "pygame",
     "numba",
-    "bluesky_gym",
+    "bluesky-simulator==1.1.0",
+    "bluesky-gym==0.2.0",
+    "bluesky-navdata==1.0.0",
     "sbx-rl",
     "tensorboard",
     "optuna-dashboard",
+    "numpy==2.3.4",
+    "scipy==1.16.3",
+    "matplotlib==3.10.7",
+    "pandas==2.3.3",
+    "torch==2.9.0",
 ]
 plots_requires = ["seaborn", "rliable~=1.2.0", "scipy~=1.10"]
 test_requires = [

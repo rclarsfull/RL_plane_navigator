@@ -1,23 +1,30 @@
-gym==0.26.2
-stable-baselines3[extra,tests,docs]>=2.6.1a1,<3.0
+# Fixed versions based on working environment (macOS)
+gymnasium==1.2.3
+stable-baselines3[extra,tests,docs]==2.7.0
 box2d-py==2.3.8
 pybullet_envs_gymnasium>=0.6.0
-# minigrid
 cloudpickle>=2.2.1
-# Optuna auto
 optunahub>=0.2.0
-# optuna plots:
 plotly
-# need to upgrade to gymnasium:
-# panda-gym~=3.0.1
 wandb
 moviepy>=1.0.0
 
+# Core dependencies with fixed versions
 pygame
-numba 
-bluesky_gym
+numba
+bluesky-simulator==1.1.0
+bluesky-gym==0.2.0
+bluesky-navdata==1.0.0
 sbx-rl
 setuptools>=68
 tensorboard
 optuna-dashboard
+
+# Scientific stack - fixed versions
+numpy==2.3.4
+scipy==1.16.3
+matplotlib==3.10.7
+pandas==2.3.3
+torch==2.9.0
+
 git+https://github.com/adysonmaia/sb3-plus#egg=sb3-plus
