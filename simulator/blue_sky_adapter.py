@@ -11,11 +11,17 @@ import bluesky as bs
 from bluesky_gym.envs.common.screen_dummy import ScreenDummy
 
 logger = logging.getLogger("AdapterLogger")
-logger.setLevel(logging.INFO) 
+logger.setLevel(logging.ERROR)  # Set to ERROR to see critical issues
 handler = logging.FileHandler("AdapterLogger.log", mode="w", encoding='utf-8')
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+
+# Add console handler for immediate feedback
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.ERROR)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 # Global dictionary to track accumulated function times
 function_times = defaultdict(float)
@@ -48,6 +54,23 @@ def reset_function_times():
     function_times.clear()
     logger.info("Function times reset")
 
+def safe_stack_command(command: str) -> bool:
+    """Safely execute a BlueSky stack command with validation and error handling.
+    
+    Returns:
+        True if command was sent successfully, False otherwise
+    """
+    try:
+        # Log command before sending
+        logger.debug(f"Executing BlueSky command: {command}")
+        bs.stack.stack(command)
+        return True
+    except Exception as e:
+        logger.error(f"FAILED to execute BlueSky command: '{command}'. Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
 
 class Simulator(simulator_interface.SimulatorInterface):
 
@@ -79,8 +102,8 @@ class Simulator(simulator_interface.SimulatorInterface):
             return
         
         cas_kts = acspd * 1.94384
-        bs.stack.stack(f"CRE {acid} {actype} {aclat} {aclon} {achdg} FL{acalt} {cas_kts}")
-        bs.stack.stack(f'RESOOFF {acid}')
+        safe_stack_command(f"CRE {acid} {actype} {aclat} {aclon} {achdg} FL{acalt} {cas_kts}")
+        safe_stack_command(f'RESOOFF {acid}')
 
     @time_function
     def traf_get_state(self, id: str) -> Tuple[float, float, float, float]:
@@ -126,7 +149,8 @@ class Simulator(simulator_interface.SimulatorInterface):
             logger.error(f"HDG {id}: Invalid heading (NaN/Inf): {new_heading}. SKIPPING.")
             return
         
-        bs.stack.stack(f"HDG {id} {new_heading}")
+        # Use safe wrapper
+        safe_stack_command(f"HDG {id} {new_heading}")
 
     @time_function
     def traf_set_speed(self, id: str, new_speed: float):
