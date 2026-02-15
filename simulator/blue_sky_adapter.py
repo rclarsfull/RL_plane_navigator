@@ -79,8 +79,8 @@ class Simulator(simulator_interface.SimulatorInterface):
     def init(self, simulator_step_size: float = 1.0) -> None:
         bs.init(mode='sim', detached=True, discoverable=False)
         bs.scr = ScreenDummy()
-        bs.stack.stack(f"DT {simulator_step_size};FF") 
-        bs.stack.stack("RESO OFF")
+        safe_stack_command(f"DT {simulator_step_size};FF")
+        safe_stack_command("RESO OFF")
 
     # ===== Traffic Management =====
     @time_function
@@ -157,11 +157,11 @@ class Simulator(simulator_interface.SimulatorInterface):
         # Umrechnung von m/s in CAS-Knoten
         # 1 m/s = 1.94384 Knoten
         cas_kts = new_speed * 1.94384
-        bs.stack.stack(f"SPD {id},{cas_kts}")
+        safe_stack_command(f"SPD {id},{cas_kts}")
 
     @time_function
     def traf_set_altitude(self, id: str, new_altitude: float):
-        bs.stack.stack(f"ALT {id} {new_altitude}")
+        safe_stack_command(f"ALT {id} {new_altitude}")
 
     @time_function
     def traf_add_waypoint(self, id: str, lat: float, lon: float, altitude: int = None):
@@ -174,9 +174,9 @@ class Simulator(simulator_interface.SimulatorInterface):
             altitude: Flugfläche (optional), z.B. FL100 => 100
         """
         if altitude is not None:
-            bs.stack.stack(f"ADDWPT {id} {lat} {lon} FL{altitude}")
+            safe_stack_command(f"ADDWPT {id} {lat} {lon} FL{altitude}")
         else:
-            bs.stack.stack(f"ADDWPT {id} {lat} {lon}")
+            safe_stack_command(f"ADDWPT {id} {lat} {lon}")
 
     @time_function
     def traf_activate_lnav(self, id: str):
@@ -185,7 +185,7 @@ class Simulator(simulator_interface.SimulatorInterface):
         Args:
             id: Aircraft ID
         """
-        bs.stack.stack(f"LNAV {id} ON")
+        safe_stack_command(f"LNAV {id} ON")
 
     # ===== Simulation Control =====
     @time_function
@@ -202,7 +202,7 @@ class Simulator(simulator_interface.SimulatorInterface):
         """
         if dt is not None:
             # Setze die Simulator-Schrittgröße dynamisch
-            bs.stack.stack(f"DT {dt}")
+            safe_stack_command(f"DT {dt}")
         
         # Führe einen Simulator-Schritt durch
         bs.sim.step()
