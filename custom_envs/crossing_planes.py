@@ -93,8 +93,20 @@ class Cross_env(BaseCrossingEnv, gym.Env):
     def _get_observation(self, agent: Optional[Agent] = None) -> np.ndarray:
         """Wrapper - uses base class implementation"""
         return BaseCrossingEnv._get_observation(self, agent)
+    
+    def _get_info(self):
+        """Extends base class info with action statistics"""
+        return {**super()._get_info(),
+            'actions_noop': int(self.actions_noop_count),
+            'actions_direct': int(self.actions_direct_count),
+            'actions_steer': int(self.actions_steer_count),
+            'last_continuous_action': float(self.last_continuous_action),
+        }
 
     def reset(self, seed=None, options=None):
+        self.actions_noop_count = 0
+        self.actions_direct_count = 0
+        self.actions_steer_count = 0
         return BaseCrossingEnv.reset(self,seed=seed, options=options)
     
     def _get_reward(self) -> float:
