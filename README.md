@@ -74,18 +74,18 @@ tensorboard --logdir logs/tensorboard/
 ## Tests
 
 Im `scripts/` Ordner befinden sich drei Test-Skripte für verschiedene Experimente:
+Die Ergebnisse dieser Experimente wurden anschießend in der Bachlorthesis genauer beleuchtet.
 
-### 1. Crossing Tests
-```bash
-./scripts/run_crossing_tests_full.sh
-```
-Führt vollständige Tests mit den Crossing Environments durch.
-
-### 2. Lunar Lander Tests
+### 1. Lunar Lander Tests
 ```bash
 ./scripts/run_lunar_tests_full.sh
 ```
-Testet die verschiedenen Algorithmen auf dem LunarLander Environment.
+
+
+### 2. Crossing Tests
+```bash
+./scripts/run_crossing_tests_full.sh
+```
 
 ### 3. Finale Evaluierung
 ```bash
