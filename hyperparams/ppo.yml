@@ -1,16 +1,11 @@
 crossing_planes:
   policy: "MlpPolicy"
-  n_timesteps: !!float 1e7
-  n_envs: 8
-  batch_size: 32
-  n_steps: 64
-  gamma: 0.9928774904936777
-  gae_lambda: 0.9991084934772349
-  learning_rate: 0.0002094005565486899
-  ent_coef: 3.2204538276760294e-08
-  clip_range: 0.4
-  n_epochs: 1
-  max_grad_norm: 0.764031139666594
+  n_timesteps: !!float 3e6
+  n_envs: 8                                      
+  gamma: 0.96
+  learning_rate: !!float 9e-4
+  batch_size: 512
+  ent_coef: 0.002
   normalize: "dict(norm_obs=True, norm_reward=True)"
   normalize_advantage: true
   env_wrapper:
@@ -18,8 +13,7 @@ crossing_planes:
   callback:
     - "custom_envs.info_logger_callback.LogAllInfoCallback"
   policy_kwargs: "dict(
-                    net_arch=dict(pi=[64, 64], vf=[64, 64]),
-                    activation_fn=nn.Tanh
+                    net_arch=dict(pi=[128, 128], vf=[128, 128])
                   )"
 
 crossing_planes_stupid:
