@@ -1,4 +1,5 @@
 # RL_plane_navigator
+[![DOI](https://zenodo.org/badge/1159129908.svg)](https://doi.org/10.5281/zenodo.18658323)
 
 Reinforcement Learning Umgebung für Air Traffic Control mit verschiedenen RL-Algorithmen und Custom Environments.
 
