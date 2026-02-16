@@ -4,7 +4,7 @@ set -euo pipefail
 
 #66 133 42 202 7 1234 999
 SEEDS=(66 133 42 202 7 1234 999 2021) #66 133 42 202 7 1234 999 2021 31415 2718 1618 8675 11235 3141 16180
-ALGOS=(ppo) # ppo masked_ppo_split_net_with_shared
+ALGOS=(ppo masked_ppo_split_net_with_shared) # ppo masked_ppo_split_net_with_shared
 
 ENV_ID="crossing_planes_multiHead" #crossing_planes_multiHead
 LOG_ROOT="logs"
