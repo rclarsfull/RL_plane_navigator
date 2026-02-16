@@ -7,7 +7,6 @@ from rl_zoo3.wrappers import MaskVelocityWrapper
 from custom_envs.crossing_planes import Cross_env
 from custom_envs.crossing_planes_conti import Cross_env as Cross_env_conti
 from custom_envs.crossing_planes_abs import Cross_env as Cross_env_abs
-from custom_envs.crossing_planes_hierarchical import CrossingPlanesHierarchical
 from custom_envs.crossing_planes_multiHead import CrossingPlanesMultiHead
 from custom_envs.crossing_planes_stupid import Cross_env
 register(
@@ -21,10 +20,6 @@ register(
 register(
             id="crossing_planes_abs",
             entry_point="custom_envs.crossing_planes_abs:Cross_env",
-        )
-register(
-            id="crossing_planes_hierarchical",
-            entry_point="custom_envs.crossing_planes_hierarchical:CrossingPlanesHierarchical",
         )
 register(
             id="crossing_planes_multiHead",
