@@ -9,9 +9,9 @@ ALGOS=(ppo masked_ppo_split_net_with_shared) # ppo masked_ppo_split_net_with_sha
 ENV_ID="crossing_planes_multiHead" #crossing_planes_multiHead
 LOG_ROOT="logs"
 
-EVAL_FREQ="${EVAL_FREQ:-50000}"
-EVAL_EPISODES="${EVAL_EPISODES:-60}"
-N_EVAL_ENVS="${N_EVAL_ENVS:-6}"
+EVAL_FREQ="${EVAL_FREQ:-500000}"
+EVAL_EPISODES="${EVAL_EPISODES:-80}"
+N_EVAL_ENVS="${N_EVAL_ENVS:-8}"
 
 ITERATIONS=${#SEEDS[@]}
 RUN_IDX=0
@@ -22,7 +22,7 @@ for SEED in "${SEEDS[@]}"; do
   echo "Crossing: Lauf ${RUN_IDX} von ${ITERATIONS} mit Seed: ${SEED}"
   echo "----------------------------------------------------------"
 
-  for ALGO in "${ALGOS[@]}"; do
+  for ALGO in "${ALGOS[@]}"; do    
     # PPO verwendet immer crossing_planes, andere Algos verwenden ENV_ID
     if [ "${ALGO}" = "ppo" ]; then
       CURRENT_ENV="crossing_planes"
@@ -46,4 +46,5 @@ for SEED in "${SEEDS[@]}"; do
 
 done
 
-python scripts/evaluate_results.py --logs "${LOG_ROOT}" --env "${ENV_ID}" --algos "${ALGOS[@]}" --labels "PPO" "Masked shared & split_net PPO" 
+python scripts/evaluate_results.py --logs "${LOG_ROOT}"  --algos "${ALGOS[@]}" --labels "PPO" "Masked shared & split_net PPO" 
+#python scripts/evaluate_results.py --logs logs --algosppo masked_ppo_split_net_with_shared --labels "PPO" "Masked shared & split_net PPO" 

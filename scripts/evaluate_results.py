@@ -22,6 +22,13 @@ except ImportError:
     HAS_MATPLOTLIB = False
     print("Warning: matplotlib not installed. Plotting will be skipped.")
 
+try:
+    from tensorboard.backend.event_processing import event_accumulator
+    HAS_TENSORBOARD = True
+except ImportError:
+    HAS_TENSORBOARD = False
+    print("Warning: tensorboard not installed. TensorBoard metrics will be skipped.")
+
 
 # =============================================================================
 # 1. Collection Logic (from collect_evals.py)
@@ -61,6 +68,46 @@ def read_seed_from_args(params_dir: Path, run_name: str = "") -> Union[int, str]
             pass
     return ""
 
+def read_tensorboard_scalar(tb_log_path: Path, scalar_tag: str, aggregation: str = "mean") -> float:
+    """Read a scalar metric from TensorBoard logs.
+    
+    Args:
+        tb_log_path: Path to the TensorBoard log directory for this run
+        scalar_tag: The tag to read (e.g., 'env/actions_steer')
+        aggregation: How to aggregate values ('mean', 'last', 'max', 'min')
+    
+    Returns:
+        Aggregated value or np.nan if not found
+    """
+    if not HAS_TENSORBOARD or not tb_log_path.exists():
+        return np.nan
+    
+    try:
+        ea = event_accumulator.EventAccumulator(str(tb_log_path))
+        ea.Reload()
+        
+        if scalar_tag not in ea.Tags()['scalars']:
+            return np.nan
+        
+        events = ea.Scalars(scalar_tag)
+        if not events:
+            return np.nan
+        
+        values = np.array([e.value for e in events])
+        
+        if aggregation == "mean":
+            return float(np.mean(values))
+        elif aggregation == "last":
+            return float(values[-1])
+        elif aggregation == "max":
+            return float(np.max(values))
+        elif aggregation == "min":
+            return float(np.min(values))
+        else:
+            return float(np.mean(values))
+    except Exception:
+        return np.nan
+
 def load_npz_metrics(npz_path: Path) -> Dict[str, Any]:
     """Load evaluation results from .npz file."""
     metrics: Dict[str, Any] = {
@@ -72,12 +119,23 @@ def load_npz_metrics(npz_path: Path) -> Dict[str, Any]:
         "num_evals": 0,
         "last_success_rate": "",
         "best_success_rate": "",
+        "mean_success_rate": "",
+        "last_mean_ep_length": "",
+        "mean_mean_ep_length": "",
+        "best_mean_ep_length": "",
+        "mean_actions_steer": "",
+        "last_actions_steer": "",
+        "mean_actions_noop": "",
+        "last_actions_noop": "",
+        "mean_actions_direct": "",
+        "last_actions_direct": "",
     }
     try:
         data = np.load(npz_path, allow_pickle=True)
         results = data.get("results")
         timesteps = data.get("timesteps")
         successes = data.get("successes")
+        ep_lengths = data.get("ep_lengths")
         if results is not None and results.size > 0:
             res_arr = np.asarray(results, dtype=float)
             mean_per_eval = res_arr.mean(axis=1)
@@ -92,6 +150,13 @@ def load_npz_metrics(npz_path: Path) -> Dict[str, Any]:
             success_rate_per_eval = succ_arr.mean(axis=1)
             metrics["last_success_rate"] = float(success_rate_per_eval[-1])
             metrics["best_success_rate"] = float(success_rate_per_eval.max())
+            metrics["mean_success_rate"] = float(success_rate_per_eval.mean())
+        if ep_lengths is not None and ep_lengths.size > 0:
+            ep_arr = np.asarray(ep_lengths, dtype=float)
+            mean_ep_per_eval = ep_arr.mean(axis=1)
+            metrics["last_mean_ep_length"] = float(mean_ep_per_eval[-1])
+            metrics["mean_mean_ep_length"] = float(mean_ep_per_eval.mean())
+            metrics["best_mean_ep_length"] = float(mean_ep_per_eval.min())  # Lower is better for ep_length
         if timesteps is not None and timesteps.size > 0:
             metrics["last_timestep"] = int(timesteps[-1])
     except Exception:
@@ -113,33 +178,95 @@ def run_collection(args: argparse.Namespace) -> None:
         "timestamp", "env", "algo", "seed", "run_dir",
         "last_timestep", "last_eval_mean", "last_eval_median", 
         "mean_eval_mean", "best_eval_mean", "num_evals",
-        "last_success_rate", "best_success_rate",
+        "last_success_rate", "best_success_rate", "mean_success_rate",
+        "last_mean_ep_length", "mean_mean_ep_length", "best_mean_ep_length",
+        "mean_actions_steer", "last_actions_steer",
+        "mean_actions_noop", "last_actions_noop",
+        "mean_actions_direct", "last_actions_direct",
     ]
     
-    # Overwrite mode for simplicity as requested by pipeline logic
-    rows_to_write = []
+    # Build algo-to-tb_name mapping for TensorBoard directory matching
+    algo_to_tb_name = {}
+    for algo_dir in sorted(p for p in args.logs.iterdir() if p.is_dir()):
+        algo_name = algo_dir.name
+        tb_name = get_tb_log_name(algo_name)
+        algo_to_tb_name[algo_name] = tb_name
     
+    # Organize runs by (algo, env) to match with TensorBoard runs by index
+    runs_by_algo_env: Dict[Tuple[str, str], List[Tuple[str, Path]]] = {}
     for algo, run_dir in runs:
         subdirs = [d for d in run_dir.iterdir() if d.is_dir()]
         if subdirs:
             env_hint = subdirs[0].name
-            params_dir = subdirs[0]
         else:
             env_hint = run_dir.name.rsplit("_", 1)[0]
-            params_dir = run_dir / env_hint
+        key = (algo, env_hint)
+        if key not in runs_by_algo_env:
+            runs_by_algo_env[key] = []
+        runs_by_algo_env[key].append((algo, run_dir))
+    
+    # Overwrite mode for simplicity as requested by pipeline logic
+    rows_to_write = []
+    
+    # Process runs and match with TensorBoard data
+    tb_base = args.logs.parent / "tensorboard" if (args.logs.parent / "tensorboard").exists() else args.logs / "tensorboard"
+    
+    for (algo, env_hint), algo_runs in runs_by_algo_env.items():
+        # Get TensorBoard runs for this algo/env combination
+        tb_runs = []
+        if tb_base.exists() and HAS_TENSORBOARD:
+            tb_name = algo_to_tb_name.get(algo, algo)
+            for env_tb_dir in tb_base.iterdir():
+                # Use exact match or better matching strategy
+                if env_tb_dir.is_dir() and env_tb_dir.name == env_hint:
+                    # Find all runs for this algo in TensorBoard (case-insensitive matching)
+                    for tb_run_dir in sorted(env_tb_dir.iterdir()):
+                        if tb_run_dir.is_dir() and tb_name.upper() in tb_run_dir.name.upper():
+                            tb_runs.append(tb_run_dir)
+                    break
         
-        seed = read_seed_from_args(params_dir, run_dir.name)
-        metrics = load_npz_metrics(run_dir / "evaluations.npz")
-        row = {
-            "timestamp": os.environ.get("SOURCE_DATE_EPOCH") or "",
-            "env": env_hint,
-            "algo": algo,
-            "seed": seed,
-            "run_dir": str(run_dir),
-            **metrics,
-        }
-        rows_to_write.append(row)
-        print(f"Processed {algo}/{env_hint} (seed={seed}): last_mean={metrics['last_eval_mean']:.2f}")
+        # Process each run and match with TensorBoard by index
+        for idx, (algo, run_dir) in enumerate(sorted(algo_runs, key=lambda x: x[1].name)):
+            subdirs = [d for d in run_dir.iterdir() if d.is_dir()]
+            if subdirs:
+                params_dir = subdirs[0]
+            else:
+                params_dir = run_dir / env_hint
+            
+            seed = read_seed_from_args(params_dir, run_dir.name)
+            metrics = load_npz_metrics(run_dir / "evaluations.npz")
+            
+            # Match with TensorBoard run by index
+            if idx < len(tb_runs):
+                tb_run_dir = tb_runs[idx]
+                mean_steer = read_tensorboard_scalar(tb_run_dir, "env/actions_steer", "mean")
+                last_steer = read_tensorboard_scalar(tb_run_dir, "env/actions_steer", "last")
+                if not np.isnan(mean_steer):
+                    metrics["mean_actions_steer"] = float(mean_steer)
+                    metrics["last_actions_steer"] = float(last_steer)
+                
+                mean_noop = read_tensorboard_scalar(tb_run_dir, "env/actions_noop", "mean")
+                last_noop = read_tensorboard_scalar(tb_run_dir, "env/actions_noop", "last")
+                if not np.isnan(mean_noop):
+                    metrics["mean_actions_noop"] = float(mean_noop)
+                    metrics["last_actions_noop"] = float(last_noop)
+                
+                mean_direct = read_tensorboard_scalar(tb_run_dir, "env/actions_direct", "mean")
+                last_direct = read_tensorboard_scalar(tb_run_dir, "env/actions_direct", "last")
+                if not np.isnan(mean_direct):
+                    metrics["mean_actions_direct"] = float(mean_direct)
+                    metrics["last_actions_direct"] = float(last_direct)
+            
+            row = {
+                "timestamp": os.environ.get("SOURCE_DATE_EPOCH") or "",
+                "env": env_hint,
+                "algo": algo,
+                "seed": seed,
+                "run_dir": str(run_dir),
+                **metrics,
+            }
+            rows_to_write.append(row)
+            print(f"Processed {algo}/{env_hint} (seed={seed}): last_mean={metrics['last_eval_mean']:.2f}")
 
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=essential_fields)
@@ -189,6 +316,78 @@ def filter_success_rates_with_seeds(rows: List[Dict[str, Any]], env: Optional[st
             continue
         seed = r.get("seed", "").strip()
         v = r.get("last_success_rate")
+        if v and v != "":
+            try:
+                val = float(v)
+                if seed:
+                    vals[seed] = val
+            except Exception:
+                pass
+    return vals
+
+def filter_ep_lengths_with_seeds(rows: List[Dict[str, Any]], env: Optional[str], algo: str) -> Dict[str, float]:
+    vals: Dict[str, float] = {}
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        seed = r.get("seed", "").strip()
+        v = r.get("last_mean_ep_length")
+        if v and v != "":
+            try:
+                val = float(v)
+                if seed:
+                    vals[seed] = val
+            except Exception:
+                pass
+    return vals
+
+def filter_actions_steer_with_seeds(rows: List[Dict[str, Any]], env: Optional[str], algo: str) -> Dict[str, float]:
+    vals: Dict[str, float] = {}
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        seed = r.get("seed", "").strip()
+        v = r.get("mean_actions_steer")
+        if v and v != "":
+            try:
+                val = float(v)
+                if seed:
+                    vals[seed] = val
+            except Exception:
+                pass
+    return vals
+
+def filter_actions_noop_with_seeds(rows: List[Dict[str, Any]], env: Optional[str], algo: str) -> Dict[str, float]:
+    vals: Dict[str, float] = {}
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        seed = r.get("seed", "").strip()
+        v = r.get("mean_actions_noop")
+        if v and v != "":
+            try:
+                val = float(v)
+                if seed:
+                    vals[seed] = val
+            except Exception:
+                pass
+    return vals
+
+def filter_actions_direct_with_seeds(rows: List[Dict[str, Any]], env: Optional[str], algo: str) -> Dict[str, float]:
+    vals: Dict[str, float] = {}
+    for r in rows:
+        if r.get("algo") != algo:
+            continue
+        if env is not None and r.get("env") != env:
+            continue
+        seed = r.get("seed", "").strip()
+        v = r.get("mean_actions_direct")
         if v and v != "":
             try:
                 val = float(v)
@@ -346,24 +545,133 @@ def run_analysis(args: argparse.Namespace) -> None:
 
     # 2. Analyze Success Rates
     print("\n--- [Analysis] Success Rates ---")
-    algo1 = args.algos[0]
-    dict_sr1 = filter_success_rates_with_seeds(rows, args.env, algo1)
-    sr1 = np.array(list(dict_sr1.values()))
-    
-    if sr1.size > 0:
-        ci_sr1 = bootstrap_mean(sr1, B=args.B)
-        print(f"{algo1}: Success Rate CI = {ci_sr1}")
+    if args.algos:
+        algo1 = args.algos[0]
+        dict_sr1 = filter_success_rates_with_seeds(rows, args.env, algo1)
+        sr1 = np.array(list(dict_sr1.values()))
+        
+        if sr1.size > 0:
+            ci_sr1 = bootstrap_iqm(sr1, B=args.B)
+            print(f"{algo1}: Success Rate IQM CI = {ci_sr1}")
+            out_sr = args.out / f"success_rate_stats_{args.env or 'all'}_{algo1}.csv"
+            write_iqm_csv(out_sr, ci_sr1[0], ci_sr1[1], ci_sr1[2], sr1.size)
 
-    for i in range(1, len(args.algos)):
-        algo2 = args.algos[i]
-        dict_sr2 = filter_success_rates_with_seeds(rows, args.env, algo2)
-        sr2 = np.array(list(dict_sr2.values()))
-        if sr2.size > 0:
-            ci_sr2 = bootstrap_mean(sr2, B=args.B)
-            print(f"{algo2}: Success Rate CI = {ci_sr2}")
-            if sr1.size > 0:
-                diff_sr = bootstrap_diff_mean_paired(dict_sr2, dict_sr1, B=args.B)
-                print(f"  Diff Success Rate ({algo2} - {algo1}) CI = {diff_sr}")
+        for i in range(1, len(args.algos)):
+            algo2 = args.algos[i]
+            dict_sr2 = filter_success_rates_with_seeds(rows, args.env, algo2)
+            sr2 = np.array(list(dict_sr2.values()))
+            if sr2.size > 0:
+                ci_sr2 = bootstrap_iqm(sr2, B=args.B)
+                print(f"{algo2}: Success Rate IQM CI = {ci_sr2}")
+                out_sr = args.out / f"success_rate_stats_{args.env or 'all'}_{algo2}.csv"
+                write_iqm_csv(out_sr, ci_sr2[0], ci_sr2[1], ci_sr2[2], sr2.size)
+                if sr1.size > 0:
+                    diff_sr = bootstrap_diff_iqm_paired(dict_sr2, dict_sr1, B=args.B)
+                    print(f"  Diff Success Rate ({algo2} - {algo1}) CI = {diff_sr}")
+    
+    # 3. Analyze Mean Episode Lengths
+    print("\n--- [Analysis] Mean Episode Lengths ---")
+    if args.algos:
+        algo1 = args.algos[0]
+        dict_el1 = filter_ep_lengths_with_seeds(rows, args.env, algo1)
+        el1 = np.array(list(dict_el1.values()))
+        
+        if el1.size > 0:
+            ci_el1 = bootstrap_iqm(el1, B=args.B)
+            print(f"{algo1}: Mean Ep Length IQM CI = {ci_el1}")
+            out_el = args.out / f"mean_ep_length_stats_{args.env or 'all'}_{algo1}.csv"
+            write_iqm_csv(out_el, ci_el1[0], ci_el1[1], ci_el1[2], el1.size)
+
+        for i in range(1, len(args.algos)):
+            algo2 = args.algos[i]
+            dict_el2 = filter_ep_lengths_with_seeds(rows, args.env, algo2)
+            el2 = np.array(list(dict_el2.values()))
+            if el2.size > 0:
+                ci_el2 = bootstrap_iqm(el2, B=args.B)
+                print(f"{algo2}: Mean Ep Length IQM CI = {ci_el2}")
+                out_el = args.out / f"mean_ep_length_stats_{args.env or 'all'}_{algo2}.csv"
+                write_iqm_csv(out_el, ci_el2[0], ci_el2[1], ci_el2[2], el2.size)
+                if el1.size > 0:
+                    diff_el = bootstrap_diff_iqm_paired(dict_el2, dict_el1, B=args.B)
+                    print(f"  Diff Mean Ep Length ({algo2} - {algo1}) CI = {diff_el}")
+    
+    # 4. Analyze Actions Steer
+    print("\n--- [Analysis] Actions Steer ---")
+    if args.algos:
+        algo1 = args.algos[0]
+        dict_as1 = filter_actions_steer_with_seeds(rows, args.env, algo1)
+        as1 = np.array(list(dict_as1.values()))
+        
+        if as1.size > 0:
+            ci_as1 = bootstrap_iqm(as1, B=args.B)
+            print(f"{algo1}: Actions Steer IQM CI = {ci_as1}")
+            out_as = args.out / f"actions_steer_stats_{args.env or 'all'}_{algo1}.csv"
+            write_iqm_csv(out_as, ci_as1[0], ci_as1[1], ci_as1[2], as1.size)
+
+        for i in range(1, len(args.algos)):
+            algo2 = args.algos[i]
+            dict_as2 = filter_actions_steer_with_seeds(rows, args.env, algo2)
+            as2 = np.array(list(dict_as2.values()))
+            if as2.size > 0:
+                ci_as2 = bootstrap_iqm(as2, B=args.B)
+                print(f"{algo2}: Actions Steer IQM CI = {ci_as2}")
+                out_as = args.out / f"actions_steer_stats_{args.env or 'all'}_{algo2}.csv"
+                write_iqm_csv(out_as, ci_as2[0], ci_as2[1], ci_as2[2], as2.size)
+                if as1.size > 0:
+                    diff_as = bootstrap_diff_iqm_paired(dict_as2, dict_as1, B=args.B)
+                    print(f"  Diff Actions Steer ({algo2} - {algo1}) CI = {diff_as}")
+    
+    # 5. Analyze Actions Noop
+    print("\n--- [Analysis] Actions Noop ---")
+    if args.algos:
+        algo1 = args.algos[0]
+        dict_an1 = filter_actions_noop_with_seeds(rows, args.env, algo1)
+        an1 = np.array(list(dict_an1.values()))
+        
+        if an1.size > 0:
+            ci_an1 = bootstrap_iqm(an1, B=args.B)
+            print(f"{algo1}: Actions Noop IQM CI = {ci_an1}")
+            out_an = args.out / f"actions_noop_stats_{args.env or 'all'}_{algo1}.csv"
+            write_iqm_csv(out_an, ci_an1[0], ci_an1[1], ci_an1[2], an1.size)
+
+        for i in range(1, len(args.algos)):
+            algo2 = args.algos[i]
+            dict_an2 = filter_actions_noop_with_seeds(rows, args.env, algo2)
+            an2 = np.array(list(dict_an2.values()))
+            if an2.size > 0:
+                ci_an2 = bootstrap_iqm(an2, B=args.B)
+                print(f"{algo2}: Actions Noop IQM CI = {ci_an2}")
+                out_an = args.out / f"actions_noop_stats_{args.env or 'all'}_{algo2}.csv"
+                write_iqm_csv(out_an, ci_an2[0], ci_an2[1], ci_an2[2], an2.size)
+                if an1.size > 0:
+                    diff_an = bootstrap_diff_iqm_paired(dict_an2, dict_an1, B=args.B)
+                    print(f"  Diff Actions Noop ({algo2} - {algo1}) CI = {diff_an}")
+    
+    # 6. Analyze Actions Direct
+    print("\n--- [Analysis] Actions Direct ---")
+    if args.algos:
+        algo1 = args.algos[0]
+        dict_ad1 = filter_actions_direct_with_seeds(rows, args.env, algo1)
+        ad1 = np.array(list(dict_ad1.values()))
+        
+        if ad1.size > 0:
+            ci_ad1 = bootstrap_iqm(ad1, B=args.B)
+            print(f"{algo1}: Actions Direct IQM CI = {ci_ad1}")
+            out_ad = args.out / f"actions_direct_stats_{args.env or 'all'}_{algo1}.csv"
+            write_iqm_csv(out_ad, ci_ad1[0], ci_ad1[1], ci_ad1[2], ad1.size)
+
+        for i in range(1, len(args.algos)):
+            algo2 = args.algos[i]
+            dict_ad2 = filter_actions_direct_with_seeds(rows, args.env, algo2)
+            ad2 = np.array(list(dict_ad2.values()))
+            if ad2.size > 0:
+                ci_ad2 = bootstrap_iqm(ad2, B=args.B)
+                print(f"{algo2}: Actions Direct IQM CI = {ci_ad2}")
+                out_ad = args.out / f"actions_direct_stats_{args.env or 'all'}_{algo2}.csv"
+                write_iqm_csv(out_ad, ci_ad2[0], ci_ad2[1], ci_ad2[2], ad2.size)
+                if ad1.size > 0:
+                    diff_ad = bootstrap_diff_iqm_paired(dict_ad2, dict_ad1, B=args.B)
+                    print(f"  Diff Actions Direct ({algo2} - {algo1}) CI = {diff_ad}")
 
 
 # =============================================================================
@@ -547,6 +855,332 @@ def run_plotting(args: argparse.Namespace) -> None:
             fig.savefig(out_path, dpi=args.dpi, bbox_inches='tight')
             print(f"Saved plot: {out_path}")
         plt.close(fig)
+    
+    # Success Rate Bar Plot
+    print("\n--- [Plotting] Success Rate ---")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    sr_results = []
+    for algo in args.algos:
+        sr_csv = args.out / f"success_rate_stats_{args.env or 'all'}_{algo}.csv"
+        stats = load_iqm_stats(sr_csv)
+        
+        if stats:
+            sr_results.append({
+                "algo": algo,
+                "n_runs": stats["n_runs"],
+                "iqm": stats["iqm"],
+                "low": stats["low"],
+                "high": stats["high"],
+            })
+        else:
+            # Fallback
+            sr_dict = filter_success_rates_with_seeds(rows, args.env, algo)
+            sr_vals = np.array(list(sr_dict.values()))
+            if sr_vals.size > 0:
+                ci_low, ci_med, ci_high = bootstrap_iqm(sr_vals, B=args.B)
+                sr_results.append({
+                    "algo": algo,
+                    "n_runs": sr_vals.size,
+                    "iqm": ci_med,
+                    "low": ci_low,
+                    "high": ci_high,
+                })
+    
+    if sr_results:
+        algos_list = [algo_to_tb_name[r["algo"]] for r in sr_results]
+        iqms = [r["iqm"] for r in sr_results]
+        lows = [r["iqm"] - r["low"] for r in sr_results]
+        highs = [r["high"] - r["iqm"] for r in sr_results]
+        
+        ax.barh(algos_list, iqms, xerr=[lows, highs], capsize=10, alpha=0.7, color=["blue", "orange", "green", "red"][:len(algos_list)])
+        ax.invert_yaxis()
+        
+        all_lows_val = [r["low"] for r in sr_results]
+        all_highs_val = [r["high"] for r in sr_results]
+        if all_lows_val and all_highs_val:
+            min_val = min(all_lows_val)
+            max_val = max(all_highs_val)
+            diff = max_val - min_val
+            if diff == 0:
+                diff = 1.0
+            padding = diff * 0.5
+            ax.set_xlim([max(0, min_val - padding), min(1.0, max_val + padding)])
+        
+        ax.set_xlabel("Success Rate", fontsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(axis="x", alpha=0.3)
+        
+        for i, r in enumerate(sr_results):
+            x_pos = r["high"]
+            ax.text(x_pos, i, f" n={r['n_runs']}", ha="left", va="center", fontsize=20)
+        
+        fig.tight_layout()
+        out_path = args.out / f"success_rate_{args.env or 'all'}.png"
+        fig.savefig(out_path, dpi=args.dpi)
+        print(f"Saved plot: {out_path}")
+    plt.close(fig)
+    
+    # Mean Episode Length Bar Plot
+    print("\n--- [Plotting] Mean Episode Length ---")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    el_results = []
+    for algo in args.algos:
+        el_csv = args.out / f"mean_ep_length_stats_{args.env or 'all'}_{algo}.csv"
+        stats = load_iqm_stats(el_csv)
+        
+        if stats:
+            el_results.append({
+                "algo": algo,
+                "n_runs": stats["n_runs"],
+                "iqm": stats["iqm"],
+                "low": stats["low"],
+                "high": stats["high"],
+            })
+        else:
+            # Fallback
+            el_dict = filter_ep_lengths_with_seeds(rows, args.env, algo)
+            el_vals = np.array(list(el_dict.values()))
+            if el_vals.size > 0:
+                ci_low, ci_med, ci_high = bootstrap_iqm(el_vals, B=args.B)
+                el_results.append({
+                    "algo": algo,
+                    "n_runs": el_vals.size,
+                    "iqm": ci_med,
+                    "low": ci_low,
+                    "high": ci_high,
+                })
+    
+    if el_results:
+        algos_list = [algo_to_tb_name[r["algo"]] for r in el_results]
+        iqms = [r["iqm"] for r in el_results]
+        lows = [r["iqm"] - r["low"] for r in el_results]
+        highs = [r["high"] - r["iqm"] for r in el_results]
+        
+        ax.barh(algos_list, iqms, xerr=[lows, highs], capsize=10, alpha=0.7, color=["blue", "orange", "green", "red"][:len(algos_list)])
+        ax.invert_yaxis()
+        
+        all_lows_val = [r["low"] for r in el_results]
+        all_highs_val = [r["high"] for r in el_results]
+        if all_lows_val and all_highs_val:
+            min_val = min(all_lows_val)
+            max_val = max(all_highs_val)
+            diff = max_val - min_val
+            if diff == 0:
+                diff = 1.0
+            padding = diff * 0.5
+            ax.set_xlim([min_val - padding, max_val + padding])
+        
+        ax.set_xlabel("Mean Episode Length", fontsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(axis="x", alpha=0.3)
+        
+        for i, r in enumerate(el_results):
+            x_pos = r["high"]
+            ax.text(x_pos, i, f" n={r['n_runs']}", ha="left", va="center", fontsize=20)
+        
+        fig.tight_layout()
+        out_path = args.out / f"mean_ep_length_{args.env or 'all'}.png"
+        fig.savefig(out_path, dpi=args.dpi)
+        print(f"Saved plot: {out_path}")
+    plt.close(fig)
+    
+    # Actions Steer Bar Plot
+    print("\n--- [Plotting] Actions Steer ---")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    as_results = []
+    for algo in args.algos:
+        as_csv = args.out / f"actions_steer_stats_{args.env or 'all'}_{algo}.csv"
+        stats = load_iqm_stats(as_csv)
+        
+        if stats:
+            as_results.append({
+                "algo": algo,
+                "n_runs": stats["n_runs"],
+                "iqm": stats["iqm"],
+                "low": stats["low"],
+                "high": stats["high"],
+            })
+        else:
+            # Fallback
+            as_dict = filter_actions_steer_with_seeds(rows, args.env, algo)
+            as_vals = np.array(list(as_dict.values()))
+            if as_vals.size > 0:
+                ci_low, ci_med, ci_high = bootstrap_iqm(as_vals, B=args.B)
+                as_results.append({
+                    "algo": algo,
+                    "n_runs": as_vals.size,
+                    "iqm": ci_med,
+                    "low": ci_low,
+                    "high": ci_high,
+                })
+    
+    if as_results:
+        algos_list = [algo_to_tb_name[r["algo"]] for r in as_results]
+        iqms = [r["iqm"] for r in as_results]
+        lows = [r["iqm"] - r["low"] for r in as_results]
+        highs = [r["high"] - r["iqm"] for r in as_results]
+        
+        ax.barh(algos_list, iqms, xerr=[lows, highs], capsize=10, alpha=0.7, color=["blue", "orange", "green", "red"][:len(algos_list)])
+        ax.invert_yaxis()
+        
+        all_lows_val = [r["low"] for r in as_results]
+        all_highs_val = [r["high"] for r in as_results]
+        if all_lows_val and all_highs_val:
+            min_val = min(all_lows_val)
+            max_val = max(all_highs_val)
+            diff = max_val - min_val
+            if diff == 0:
+                diff = 1.0
+            padding = diff * 0.5
+            ax.set_xlim([max(0, min_val - padding), max_val + padding])
+        
+        ax.set_xlabel("Mean Actions Steer", fontsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(axis="x", alpha=0.3)
+        
+        for i, r in enumerate(as_results):
+            x_pos = r["high"]
+            ax.text(x_pos, i, f" n={r['n_runs']}", ha="left", va="center", fontsize=20)
+        
+        fig.tight_layout()
+        out_path = args.out / f"actions_steer_{args.env or 'all'}.png"
+        fig.savefig(out_path, dpi=args.dpi)
+        print(f"Saved plot: {out_path}")
+    else:
+        print("No actions_steer data found for plotting (TensorBoard data may be missing)")
+    plt.close(fig)
+    
+    # Actions Noop Bar Plot
+    print("\n--- [Plotting] Actions Noop ---")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    an_results = []
+    for algo in args.algos:
+        an_csv = args.out / f"actions_noop_stats_{args.env or 'all'}_{algo}.csv"
+        stats = load_iqm_stats(an_csv)
+        
+        if stats:
+            an_results.append({
+                "algo": algo,
+                "n_runs": stats["n_runs"],
+                "iqm": stats["iqm"],
+                "low": stats["low"],
+                "high": stats["high"],
+            })
+        else:
+            # Fallback
+            an_dict = filter_actions_noop_with_seeds(rows, args.env, algo)
+            an_vals = np.array(list(an_dict.values()))
+            if an_vals.size > 0:
+                ci_low, ci_med, ci_high = bootstrap_iqm(an_vals, B=args.B)
+                an_results.append({
+                    "algo": algo,
+                    "n_runs": an_vals.size,
+                    "iqm": ci_med,
+                    "low": ci_low,
+                    "high": ci_high,
+                })
+    
+    if an_results:
+        algos_list = [algo_to_tb_name[r["algo"]] for r in an_results]
+        iqms = [r["iqm"] for r in an_results]
+        lows = [r["iqm"] - r["low"] for r in an_results]
+        highs = [r["high"] - r["iqm"] for r in an_results]
+        
+        ax.barh(algos_list, iqms, xerr=[lows, highs], capsize=10, alpha=0.7, color=["blue", "orange", "green", "red"][:len(algos_list)])
+        ax.invert_yaxis()
+        
+        all_lows_val = [r["low"] for r in an_results]
+        all_highs_val = [r["high"] for r in an_results]
+        if all_lows_val and all_highs_val:
+            min_val = min(all_lows_val)
+            max_val = max(all_highs_val)
+            diff = max_val - min_val
+            if diff == 0:
+                diff = 1.0
+            padding = diff * 0.5
+            ax.set_xlim([max(0, min_val - padding), max_val + padding])
+        
+        ax.set_xlabel("Mean Actions Noop", fontsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(axis="x", alpha=0.3)
+        
+        for i, r in enumerate(an_results):
+            x_pos = r["high"]
+            ax.text(x_pos, i, f" n={r['n_runs']}", ha="left", va="center", fontsize=20)
+        
+        fig.tight_layout()
+        out_path = args.out / f"actions_noop_{args.env or 'all'}.png"
+        fig.savefig(out_path, dpi=args.dpi)
+        print(f"Saved plot: {out_path}")
+    else:
+        print("No actions_noop data found for plotting (TensorBoard data may be missing)")
+    plt.close(fig)
+    
+    # Actions Direct Bar Plot
+    print("\n--- [Plotting] Actions Direct ---")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ad_results = []
+    for algo in args.algos:
+        ad_csv = args.out / f"actions_direct_stats_{args.env or 'all'}_{algo}.csv"
+        stats = load_iqm_stats(ad_csv)
+        
+        if stats:
+            ad_results.append({
+                "algo": algo,
+                "n_runs": stats["n_runs"],
+                "iqm": stats["iqm"],
+                "low": stats["low"],
+                "high": stats["high"],
+            })
+        else:
+            # Fallback
+            ad_dict = filter_actions_direct_with_seeds(rows, args.env, algo)
+            ad_vals = np.array(list(ad_dict.values()))
+            if ad_vals.size > 0:
+                ci_low, ci_med, ci_high = bootstrap_iqm(ad_vals, B=args.B)
+                ad_results.append({
+                    "algo": algo,
+                    "n_runs": ad_vals.size,
+                    "iqm": ci_med,
+                    "low": ci_low,
+                    "high": ci_high,
+                })
+    
+    if ad_results:
+        algos_list = [algo_to_tb_name[r["algo"]] for r in ad_results]
+        iqms = [r["iqm"] for r in ad_results]
+        lows = [r["iqm"] - r["low"] for r in ad_results]
+        highs = [r["high"] - r["iqm"] for r in ad_results]
+        
+        ax.barh(algos_list, iqms, xerr=[lows, highs], capsize=10, alpha=0.7, color=["blue", "orange", "green", "red"][:len(algos_list)])
+        ax.invert_yaxis()
+        
+        all_lows_val = [r["low"] for r in ad_results]
+        all_highs_val = [r["high"] for r in ad_results]
+        if all_lows_val and all_highs_val:
+            min_val = min(all_lows_val)
+            max_val = max(all_highs_val)
+            diff = max_val - min_val
+            if diff == 0:
+                diff = 1.0
+            padding = diff * 0.5
+            ax.set_xlim([max(0, min_val - padding), max_val + padding])
+        
+        ax.set_xlabel("Mean Actions Direct", fontsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.grid(axis="x", alpha=0.3)
+        
+        for i, r in enumerate(ad_results):
+            x_pos = r["high"]
+            ax.text(x_pos, i, f" n={r['n_runs']}", ha="left", va="center", fontsize=20)
+        
+        fig.tight_layout()
+        out_path = args.out / f"actions_direct_{args.env or 'all'}.png"
+        fig.savefig(out_path, dpi=args.dpi)
+        print(f"Saved plot: {out_path}")
+    else:
+        print("No actions_direct data found for plotting (TensorBoard data may be missing)")
+    plt.close(fig)
 
 
 # =============================================================================
