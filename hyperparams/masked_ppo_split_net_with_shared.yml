@@ -2,10 +2,10 @@ crossing_planes_multiHead:
   policy: "MaskedMultiOutputPolicy"
   n_timesteps: !!float 1e7
   n_envs: 8                                      
-  gamma: 0.96
-  learning_rate: !!float 9e-4
-  batch_size: 512
-  ent_coef: 0.008
+  gamma: 0.99
+  learning_rate: !!float 3e-4
+  batch_size: 4096
+  ent_coef: 0.02
   normalize: "dict(norm_obs=True, norm_reward=True)"
   normalize_advantage: true
   env_wrapper:
