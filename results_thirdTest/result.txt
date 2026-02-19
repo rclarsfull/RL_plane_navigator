@@ -1,0 +1,35 @@
+
+--- [Analysis] Metric: last_eval_mean ---
+ppo: IQM CI = (np.float64(185.04450181874998), np.float64(209.63311164374997), np.float64(233.88652818937499))
+masked_ppo_split_net_with_shared: IQM CI = (np.float64(202.1722164375), np.float64(213.663948665625), np.float64(245.87650137499998))
+  Diff IQM (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(-10.497677518749981), np.float64(6.628290112500025), np.float64(26.241214159375005))
+
+--- [Analysis] Metric: mean_eval_mean ---
+ppo: IQM CI = (np.float64(210.39154946312502), np.float64(214.60863637875002), np.float64(221.37933083093753))
+masked_ppo_split_net_with_shared: IQM CI = (np.float64(218.79597741578124), np.float64(225.71425012390625), np.float64(230.7436259425))
+  Diff IQM (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(7.340449272499967), np.float64(10.445080567656248), np.float64(12.731336704531174))
+
+--- [Analysis] Success Rates ---
+ppo: Success Rate IQM CI = (np.float64(0.95), np.float64(0.971875), np.float64(1.0))
+masked_ppo_split_net_with_shared: Success Rate IQM CI = (np.float64(0.9656250000000001), np.float64(0.975), np.float64(0.984375))
+  Diff Success Rate (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(-0.02187500000000009), np.float64(0.0031249999999999334), np.float64(0.03125))
+
+--- [Analysis] Mean Episode Lengths ---
+ppo: Mean Ep Length IQM CI = (np.float64(122.853125), np.float64(126.23125), np.float64(131.171875))
+masked_ppo_split_net_with_shared: Mean Ep Length IQM CI = (np.float64(127.15), np.float64(131.5125), np.float64(134.34375))
+  Diff Mean Ep Length (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(1.6812499999999773), np.float64(5.181249999999999), np.float64(7.328125))
+
+--- [Analysis] Actions Steer ---
+ppo: Actions Steer IQM CI = (np.float64(2.8763866877971473), np.float64(3.202060221870047), np.float64(3.478605388272583))
+masked_ppo_split_net_with_shared: Actions Steer IQM CI = (np.float64(14.755150554675119), np.float64(15.094690966719494), np.float64(15.68541996830428))
+  Diff Actions Steer (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(11.398157686212361), np.float64(11.873217115689382), np.float64(12.660459587955625))
+
+--- [Analysis] Actions Noop ---
+ppo: Actions Noop IQM CI = (np.float64(7.503674722662441), np.float64(9.73177496038035), np.float64(11.159667194928684))
+masked_ppo_split_net_with_shared: Actions Noop IQM CI = (np.float64(30.912836767036453), np.float64(32.56418383518225), np.float64(33.07606973058637))
+  Diff Actions Noop (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(20.65491283676704), np.float64(22.80229793977813), np.float64(24.871275752773375))
+
+--- [Analysis] Actions Direct ---
+ppo: Actions Direct IQM CI = (np.float64(9.526941362916006), np.float64(9.924920760697304), np.float64(10.267036450079239))
+masked_ppo_split_net_with_shared: Actions Direct IQM CI = (np.float64(27.886291600633918), np.float64(28.36687797147385), np.float64(28.912440570522982))
+  Diff Actions Direct (masked_ppo_split_net_with_shared - ppo) CI = (np.float64(17.965927099841526), np.float64(18.42828843106181), np.float64(18.993680665610142))
