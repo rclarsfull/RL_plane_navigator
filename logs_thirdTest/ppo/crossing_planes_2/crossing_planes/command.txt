@@ -1,0 +1,1 @@
+/opt/homebrew/Cellar/python@3.12/3.12.11/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python train.py --algo ppo --verbose 0 --env crossing_planes --vec-env subproc --device cpu --num-threads 4 --tensorboard-log logs/tensorboard -P --eval-episodes 80 --n-eval-envs 8 --eval-freq 500000 --seed 133
